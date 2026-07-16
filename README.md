@@ -13,23 +13,21 @@ real stained glass.
 ## Examples
 
 Generated with `python3 png_to_stained_glass_svg.py <input>.png --preview`.
-Shown at full resolution — click any image to zoom.
+Click any image to view it at full resolution.
 
 ### Sample 1
 
-Input &nbsp;→&nbsp; stained-glass output:
-
-![sample1 input](sample1.png)
-
-![sample1 output](docs/sample1_result.png)
+<p align="center">
+  <img src="sample1.png" width="400" hspace="16">
+  <img src="docs/sample1_result.png" width="400" hspace="16">
+</p>
 
 ### Sample 2
 
-Input &nbsp;→&nbsp; stained-glass output:
-
-![sample2 input](sample2.png)
-
-![sample2 output](docs/sample2_result.png)
+<p align="center">
+  <img src="sample2.png" width="400" hspace="16">
+  <img src="docs/sample2_result.png" width="400" hspace="16">
+</p>
 
 ---
 
