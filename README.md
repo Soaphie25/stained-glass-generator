@@ -1,5 +1,7 @@
 # PNG → Stained-Glass SVG
 
+**English** | [简体中文](读我.md)
+
 Convert a raster image (PNG or JPEG) into print-ready vector artifacts for a
 **3D-printed stained-glass** pipeline: a silhouette, black leading (came) lines,
 and flat-shaded glass fragments — one file per glass color, plus a black leading
@@ -98,7 +100,7 @@ python3 png_to_stained_glass_svg.py portrait.png
 A figure with a dark garment, 4 colors, exact came widths, smoother curves:
 
 ```bash
-python3 png_to_stained_glass_svg.py miku.jpg \
+python3 png_to_stained_glass_svg.py figure.png \
     --num-colors 4 \
     --tier-thin 0.4 --tier-bold 0.8 \
     --black-block-mm 3 \

@@ -28,12 +28,13 @@ Usage:
 import argparse
 import glob
 import os
+import re
 import sys
 
 # --- Third-party dependencies (guarded for a clear error message) ----------
 try:
     import numpy as np
-    from PIL import Image
+    from PIL import Image, ImageDraw
     import cv2
     from scipy import ndimage
     from scipy.cluster.vq import kmeans2
@@ -2222,20 +2223,110 @@ def rasterize_fitted_leading(polys, shape, simplify_tol, fit_tol):
     return mask > 0
 
 
-def write_preview_png(frag_rgb, labels, lead_polys, path):
-    """Write a 'what-you-print' preview: glass panes with black leading on top.
+def _parse_svg_subpaths(d):
+    """Parse an SVG path 'd' into subpaths as point lists, flattening cubics."""
+    toks = re.findall(r"[MLCZmlcz]|-?\d+\.?\d*(?:e-?\d+)?", d)
+    i, cur, start, subs, pts = 0, None, None, [], []
 
-    Uses the vectorised leading polygons (matching the leading SVG) so the
-    preview faithfully shows the final result once the black is added.
+    def flush():
+        if len(pts) >= 2:
+            subs.append(list(pts))
+        pts.clear()
+
+    while i < len(toks):
+        t = toks[i]
+        if t in "Mm":
+            flush()
+            cur = (float(toks[i + 1]), float(toks[i + 2])); i += 3
+            start = cur; pts.append(cur)
+        elif t in "Ll":
+            cur = (float(toks[i + 1]), float(toks[i + 2])); i += 3
+            pts.append(cur)
+        elif t in "Cc":
+            p0 = cur
+            c1 = (float(toks[i + 1]), float(toks[i + 2]))
+            c2 = (float(toks[i + 3]), float(toks[i + 4]))
+            p3 = (float(toks[i + 5]), float(toks[i + 6])); i += 7
+            for k in range(1, 9):
+                u = k / 8.0; v = 1 - u
+                pts.append((
+                    v**3 * p0[0] + 3*v*v*u*c1[0] + 3*v*u*u*c2[0] + u**3*p3[0],
+                    v**3 * p0[1] + 3*v*v*u*c1[1] + 3*v*u*u*c2[1] + u**3*p3[1]))
+            cur = p3
+        elif t in "Zz":
+            if start:
+                pts.append(start)
+            i += 1
+        else:
+            i += 1
+    flush()
+    return subs
+
+
+def write_preview_png(frag_svg, lead_svg, px_mm, path, ss=3):
+    """Anti-aliased 'what-you-print' preview.
+
+    Rasterizes the FRAGMENT and LEADING SVGs (the actual vector output) at
+    ``ss``x supersample and box-downscales with LANCZOS, so pane and leading
+    edges are smooth -- matching what a system SVG renderer shows, instead of
+    the hard pixel edges of a label-map render.
     """
-    h, w = labels.shape
-    rgb = frag_rgb.copy()
-    if lead_polys:
-        rgb[rasterize_polys(lead_polys, (h, w))] = (0, 0, 0)
-    out = np.zeros((h, w, 4), dtype=np.uint8)
-    out[:, :, :3] = rgb
-    out[:, :, 3] = np.where(labels > 0, 255, 0).astype(np.uint8)
-    Image.fromarray(out, mode="RGBA").save(path)
+    def attr(tag, name):
+        m = re.search(r'%s="([^"]*)"' % name, tag)
+        return m.group(1) if m else None
+
+    def hexrgb(s):
+        s = s.lstrip("#")
+        return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
+
+    m = re.search(r'viewBox="0 0 ([\d.]+) ([\d.]+)"', frag_svg)
+    w_mm, h_mm = float(m.group(1)), float(m.group(2))
+    s = ss / px_mm                                    # mm -> supersampled px
+    W, H = max(1, int(round(w_mm * s))), max(1, int(round(h_mm * s)))
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    drw = ImageDraw.Draw(img)
+
+    def sc(sub):
+        return [(x * s, y * s) for x, y in sub]
+
+    # 1) glass faces (skip the corner registration squares = black fills).
+    for tag in re.findall(r"<path\b[^>]*>", frag_svg):
+        fill = attr(tag, "fill")
+        d = attr(tag, "d")
+        if not d or not fill or fill in ("none", "#000000"):
+            continue
+        col = hexrgb(fill) + (255,)
+        for sub in _parse_svg_subpaths(d):
+            poly = sc(sub)
+            if len(poly) >= 3:
+                drw.polygon(poly, fill=col)
+
+    # 2) black leading on top (strokes at their width; filled blobs; skip the
+    #    tiny <=1.3mm registration squares).
+    for tag in re.findall(r"<path\b[^>]*>", lead_svg):
+        d = attr(tag, "d")
+        if not d:
+            continue
+        subs = _parse_svg_subpaths(d)
+        sw = attr(tag, "stroke-width")
+        if sw:
+            wpx = max(1, int(round(float(sw) * s)))
+            for sub in subs:
+                poly = sc(sub)
+                if len(poly) >= 2:
+                    drw.line(poly, fill=(0, 0, 0, 255), width=wpx,
+                             joint="curve")
+        elif (attr(tag, "fill") or "") == "#000000":
+            xs = [x for sub in subs for x, y in sub]
+            ys = [y for sub in subs for x, y in sub]
+            if xs and (max(xs) - min(xs) <= 1.3 and max(ys) - min(ys) <= 1.3):
+                continue                              # registration mark
+            for sub in subs:
+                poly = sc(sub)
+                if len(poly) >= 3:
+                    drw.polygon(poly, fill=(0, 0, 0, 255))
+
+    img.resize((max(1, W // ss), max(1, H // ss)), Image.LANCZOS).save(path)
 
 
 # ===========================================================================
@@ -2685,8 +2776,9 @@ def main(args=None):
         frag_svg_path = opts.fragments_svg or _in_dir("_fragments.svg")
         colored = fragments_to_colored_paths(frag_rgb, labels, arcs, clip_poly,
                                              opts.px_mm)
+        frag_svg = write_multicolor_svg(colored, width_mm, height_mm)
         with open(frag_svg_path, "w") as f:
-            f.write(write_multicolor_svg(colored, width_mm, height_mm))
+            f.write(frag_svg)
         log("wrote %s (%d vector panes)" % (frag_svg_path, len(colored)))
 
         # Per-colour fragment SVGs: one file per glass colour (the 3D-printer
@@ -2708,7 +2800,7 @@ def main(args=None):
 
         if opts.preview:
             prev_path = opts.preview_png or _in_dir("_preview.png")
-            write_preview_png(frag_rgb, labels, lead_polys, prev_path)
+            write_preview_png(frag_svg, lead_svg, opts.px_mm, prev_path)
             log("wrote %s" % prev_path)
 
     except AbortError as exc:
