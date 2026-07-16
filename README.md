@@ -1,2 +1,227 @@
-# stained-glass-generator
-Convert pixel art into vector graphics suitable for 3D printing as stained glass.
+# PNG → Stained-Glass SVG
+
+Convert a raster image (PNG or JPEG) into print-ready vector artifacts for a
+**3D-printed stained-glass** pipeline: a silhouette, black leading (came) lines,
+and flat-shaded glass fragments — one file per glass color, plus a black leading
+layer.
+
+The output is deliberately **flat, per-pane shading** (no gradients): a
+filament 3D printer can't reproduce photographic detail, so the image is
+segmented into solid-color glass panes bounded by black leading, exactly like
+real stained glass.
+
+## Examples
+
+| Input | Stained-glass output |
+|:-----:|:--------------------:|
+| <img src="sample1.png" width="280"> | <img src="docs/sample1_result.png" width="280"> |
+| <img src="sample2.png" width="280"> | <img src="docs/sample2_result.png" width="280"> |
+
+Generated with:
+
+```bash
+python3 png_to_stained_glass_svg.py sample1.png --preview
+```
+
+---
+
+## What it produces
+
+Everything lands in a single folder, `<input>_fragments/` (override with
+`--fragments-dir`):
+
+| File | What it is |
+|------|------------|
+| `<name>_silhouette.svg` | Outer outline of the piece (+ interior holes), one even-odd path. |
+| `<name>_leading.svg`    | The black came lines — stroked at real mm widths. Print this as the **black layer**. |
+| `<name>_fragments.svg`  | All glass panes as one multicolor SVG (exact planar partition). |
+| `color_NN_<hex>.svg`    | **One SVG per glass color** — each is its own print layer. |
+| `<name>_fragments.png`  | Raster preview of the colored panes. |
+| `<name>_preview.png`    | Optional composite preview (`--preview`). |
+
+Every SVG carries **physical millimeter units** and four corner **registration
+marks**, so all the color layers and the leading layer align when imported into
+your slicer / print app (which typically crops to visible content and ignores
+SVG page size and fill color — hence the marks and one-file-per-color).
+
+---
+
+## Why it's built this way
+
+- **1 px = 0.4 mm** by default (a typical nozzle diameter). Max print size is
+  clamped to 250 mm/side.
+- **Extraction happens at full input resolution; only the vectors are scaled
+  down** to fit the print bed. Downscaling the *raster* first would break thin
+  black lines, so the geometry is extracted at full fidelity and the resulting
+  vectors are scaled — thin lines stay continuous.
+- **Fragments are an exact planar partition** (0 gaps, 0 overlaps): panes are
+  built by tracing the shared pixel cracks between regions and re-fitting them
+  once, so adjacent panes share the identical edge. Overlaps would be
+  unprintable (which color wins?) and gaps would leave holes.
+- **Leading and fragments come from the same geometry**, so the black came sits
+  exactly on the pane seams.
+- **The 3D-print app ignores SVG fill color**, so each color is emitted as its
+  own file (= its own print layer / filament swap).
+
+---
+
+## Install
+
+Python 3.9+ and a few scientific packages:
+
+```bash
+pip install pillow numpy scipy scikit-image opencv-python shapely
+```
+
+---
+
+## Usage
+
+```bash
+python3 png_to_stained_glass_svg.py input.png [options]
+```
+
+### Examples
+
+Basic (12 colors, auto tiered leading):
+
+```bash
+python3 png_to_stained_glass_svg.py portrait.png
+```
+
+A figure with a dark garment, 4 colors, exact came widths, smoother curves:
+
+```bash
+python3 png_to_stained_glass_svg.py miku.jpg \
+    --num-colors 4 \
+    --tier-thin 0.4 --tier-bold 0.8 \
+    --black-block-mm 3 \
+    --smooth-curves
+```
+
+Tune how black is split into thin *leading* vs solid black *glass*:
+
+```bash
+# Lower --black-block-mm so a thick region (e.g. a sleeve) becomes a solid
+# black GLASS pane ringed by a bold came, instead of thin leading lines.
+python3 png_to_stained_glass_svg.py photo.jpg --black-block-mm 3
+```
+
+---
+
+## How it works (pipeline)
+
+1. **Silhouette** — non-transparent pixels → outer contour + holes → one clean
+   polygon (`clip_poly`), reused everywhere so all outlines register.
+2. **Black split** — black pixels are split into thin **leading lines** and
+   thick **blocks**. A thick block (a dark garment, a border) becomes a **black
+   glass pane** ringed by a bold **came**, not a mess of thin lines.
+3. **Color quantization** — area-weighted k-means into `--num-colors` groups;
+   near-identical adjacent panes with no black between them are merged.
+4. **Partition** — the label image's pixel cracks are traced into arcs, smoothed
+   once, and rebuilt into faces with `shapely.polygonize` → exact shared-edge
+   panes.
+5. **Leading** — the leaded arcs are linked into continuous lines (so a curve
+   broken by crossings keeps one consistent width), tiered into **thin vs bold**,
+   and stroked. A perimeter **came** frames the whole piece.
+6. **Emit** — all SVGs + PNGs, with registration marks, into the output folder.
+
+---
+
+## Options
+
+### Sizing & I/O
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--fragments-dir DIR` | `<input>_fragments/` | Output folder for all files. |
+| `--px-mm MM` | `0.4` | Physical size of one input pixel (nozzle width). |
+| `--max-size-mm MM` | `250` | Clamp longest printed side to this; vectors scale to fit. |
+| `--autocrop` / `--no-autocrop` | on | Trim transparent border before sizing. |
+| `--preview` | off | Also write a composite preview PNG. |
+| `--silhouette-fill none\|black` | `none` | Silhouette as an outline or a filled shape. |
+| `--reg-mark-size MM` | `1.0` | Size of the corner registration marks. |
+
+### Color & fragments
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--num-colors N` | `12` | Glass colors (k-means groups). Hard cap 24. |
+| `--fragment-color original\|quantized` | `quantized` | Keep source colors or quantize. |
+| `--segment-mode color\|leading` | `color` | Split panes by color+leading, or leading only. |
+| `--min-fragment-area PX` | `32` | Merge panes smaller than this into a neighbor. |
+| `--color-merge-tol N` | `110` | Merge touching same-ish colored panes (RGB distance; 0 = off). |
+| `--lum-threshold N` | `90` | A pixel is "black/leading" if all of R,G,B are below this. |
+| `--alpha-min N` | `128` | Alpha at/above which a pixel counts as opaque. |
+
+### Leading (came) width
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--line-width tier\|auto\|MM` | `tier` | `tier` = two widths (bold outlines vs thin splitters); `auto` = each stroke's measured width; a number = fixed mm. |
+| `--tier-thin MM` | auto | Force the exact **thin**-tier width (0 = auto from pixels). |
+| `--tier-bold MM` | auto | Force the exact **bold**-tier width (0 = auto). |
+| `--line-width-scale F` | `1.0` | Multiply all measured widths. |
+| `--min-line-width PX` | `1.5` | Floor for leading width (1.5 px ≈ 0.6 mm). |
+| `--perimeter-came` / `--no-perimeter-came` | on | Frame the whole piece with a came. |
+
+### Line linking & smoothing
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--link-angle DEG` | `35` | At a junction, two arcs join into one continuous line only if their tangents are within this angle of straight (bigger = corner, chain stops). |
+| `--link-width-ratio R` | `1.7` | Max width ratio to link two arcs as the same line. |
+| `--smooth-curves` | off | Emit leading as smooth Bézier curves (rounds linked junctions). Best for sparse, curvy art; the default polyline is crisper on dense line-work. |
+
+### Black blocks (solid black glass)
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--black-block-mm MM` | `3.0` | Black regions thicker than this become **black glass panes** (ringed by a bold came) instead of leading. `0` disables. |
+| `--min-black-area PX` | `2` | Drop black specks smaller than this. |
+
+### Geometry tolerances
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--fit-tolerance PX` | `0.4` | Bézier fit tolerance. |
+| `--simplify-tolerance PX` | `0.3` | Contour pre-simplification. |
+| `--smooth-tolerance PX` | `1.2` | Ring smoothing. |
+| `--connectivity 4\|8` | `8` | Pixel connectivity for components. |
+
+Run `python3 png_to_stained_glass_svg.py --help` for the complete list.
+
+---
+
+## Tuning tips
+
+- **Thin lines that should be bold** — if a bold outline rings a dark region
+  (a sleeve, a garment), lower `--black-block-mm` until that region is detected
+  as one solid block: its outline is then drawn as a bold came instead of a thin
+  seam.
+- **Jagged / faceted curves** — the arc *linking* already gives long lines a
+  consistent width; add `--smooth-curves` only for sparse, very curvy art. On
+  dense line-work the plain polyline usually looks cleaner.
+- **Exact came widths** — set `--line-width tier` with `--tier-thin` /
+  `--tier-bold` in mm.
+- **Missing / doubled dividers** — adjust `--color-merge-tol` (merges
+  near-identical color bands) and `--min-fragment-area` (removes slivers).
+- **Too many / too few colors** — `--num-colors` (cap 24). Fewer colors = fewer
+  filament swaps.
+
+---
+
+## Printing notes
+
+- Print the **`color_NN_*.svg`** files as separate colored layers and
+  **`<name>_leading.svg`** as the black layer on top.
+- Keep the corner **registration marks** on every layer — they're how the layers
+  stay aligned on import.
+- Black leading is a separate layer, so black does **not** consume a color slot
+  (except genuine black *glass* blocks).
+
+---
+
+## License
+
+[GNU General Public License v3.0](LICENSE).

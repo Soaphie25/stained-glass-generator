@@ -216,3 +216,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Stained-glass generator outputs
+*_fragments/
+*_silhouette.svg
+*_leading.svg
+*_fragments.svg
+*_fragments.png
+*_preview.svg
+*_preview.png
+color_*.svg
