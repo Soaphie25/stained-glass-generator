@@ -12,6 +12,15 @@ filament 3D printer can't reproduce photographic detail, so the image is
 segmented into solid-color glass panes bounded by black leading, exactly like
 real stained glass.
 
+## 3D-printed result
+
+`sample2` printed and held to the light — the black leading and translucent
+color panes come through just like real stained glass:
+
+<p align="center">
+  <img src="docs/glass.jpg" width="380">
+</p>
+
 ## Examples
 
 Generated with `python3 png_to_stained_glass_svg.py <input>.png --preview`.
