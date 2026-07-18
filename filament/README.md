@@ -100,15 +100,20 @@ fractions), plus an interface-scatter term calibrated separately.
 
 **Calibrate a filament pair** — `make_mixture_pad.py` emits an 11-pad ramp (pad 0 =
 pure A … pad 10 = pure B). Each pad is a solid block **tagged with a mix ratio**;
-Bambu does the sublayer slicing. Pass a real Bambu color-mix `.3mf` export as the
-template so printer/filament settings match your machine and the ratios open
-pre-set (no color-triangle dragging):
+Bambu does the sublayer slicing. The output `mixture_pad.3mf` opens as a genuine
+Bambu project with all ratios pre-set (no color-triangle dragging):
 
 ```bash
-python3 filament/make_mixture_pad.py --bambu-template your_bambu_export.3mf
-# -> filament/mixpad/mixture_pad_bambu.3mf  (12 filament slots: 1=A, 2=B, 3=black,
+python3 filament/make_mixture_pad.py
+# -> filament/mixpad/mixture_pad.3mf  (12 filament slots: 1=A, 2=B, 3=black,
 #    4-12 = the 9 mixes; enable_mixed_color_sublayer=1)
 ```
+
+It templates from the bundled `filament/templates/bambu_p2s.3mf` (a sanitised
+Bambu Lab P2S / PETG-Transparent skeleton). For a different machine, pass your own
+Bambu `.3mf` export via `--bambu-template <export>.3mf`; `--plain` writes a plain
+core-3MF instead (Bambu flags it "not from Bambu Lab"). The single-filament
+`make_calibration_pad.py` takes the same flags.
 
 **The mixture model** — `mixture.py`. Requires the full-layer calibration of each
 filament as the baseline (`ln T = b − a·t`, exact at the pure ends). It fits a

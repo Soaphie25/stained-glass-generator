@@ -382,11 +382,14 @@ def main(argv=None):
                    help="gap from top-left corner to the orientation dot (default 1.5)")
     p.add_argument("--also-stl", action="store_true",
                    help="also write the two separate STL parts alongside the 3MF")
-    p.add_argument("--bambu-template",
-                   help="a real Bambu .3mf export; when given, also write "
-                        "calibration_pad_bambu.3mf that opens as a genuine Bambu "
-                        "project (body=slot1, black markers=slot2) instead of a "
-                        "plain 3MF Bambu flags as 'not from Bambu Lab'")
+    p.add_argument("--bambu-template", default=None,
+                   help="Bambu .3mf export to template from (printer/filament "
+                        "settings). Defaults to the bundled P2S template so the "
+                        "pad opens as a genuine Bambu project; pass your own "
+                        "export for a different machine")
+    p.add_argument("--plain", action="store_true",
+                   help="write a plain core-3MF instead (Bambu flags it 'not "
+                        "from Bambu Lab' but any slicer opens it)")
     p.add_argument("--out-dir", default=None,
                    help="output folder (default: <script dir>/pad)")
     opts = p.parse_args(argv)
@@ -403,19 +406,20 @@ def main(argv=None):
         json.dump(layout, f, indent=2)
     write_preview(layout, prev)
 
-    # With a Bambu template, calibration_pad.3mf IS the Bambu project; without one
-    # it's a plain 3MF (Bambu warns "not from Bambu Lab" and imports geometry only).
-    if opts.bambu_template:
-        from bambu_mix3mf import write_bambu_color_mix_3mf
+    # calibration_pad.3mf IS the Bambu project (bundled template unless --plain
+    # or a custom --bambu-template); the plain 3MF is only for non-Bambu slicers.
+    from bambu_mix3mf import write_bambu_color_mix_3mf, default_template
+    template = None if opts.plain else (opts.bambu_template or default_template())
+    if template:
         bases = [{"colour": "#BFD8FF"}, {"colour": "#111111"}]   # body, black
         parts = [{"name": "body", "boxes": body_boxes, "slot": 1},
                  {"name": "markers", "boxes": marker_boxes, "slot": 2}]
-        write_bambu_color_mix_3mf(tmf, opts.bambu_template, bases, parts)
+        write_bambu_color_mix_3mf(tmf, template, bases, parts)
         kind = "Bambu project (slot 1=transparent body, slot 2=black markers)"
     else:
         write_3mf(tmf, body_boxes, marker_boxes)
-        kind = ("PLAIN 3MF -- Bambu flags 'not from Bambu Lab'; pass "
-                "--bambu-template <export>.3mf for a real Bambu project")
+        kind = ("PLAIN 3MF -- Bambu flags 'not from Bambu Lab'; drop --plain for "
+                "a real Bambu project")
 
     stls = ""
     if opts.also_stl:

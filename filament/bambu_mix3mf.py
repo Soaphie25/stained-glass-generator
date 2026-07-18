@@ -36,6 +36,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from make_calibration_pad import _boxes_to_mesh  # noqa: E402
 
 
+def default_template():
+    """Path to the bundled (sanitised, P2S) Bambu template, or None if absent."""
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     "templates", "bambu_p2s.3mf")
+    return p if os.path.exists(p) else None
+
+
 def _uuid(seed):
     return str(uuid.uuid5(uuid.NAMESPACE_URL, "sgg-mix3mf-" + str(seed)))
 

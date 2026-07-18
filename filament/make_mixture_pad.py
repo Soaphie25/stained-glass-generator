@@ -41,7 +41,7 @@ from PIL import Image, ImageDraw
 # reuse the box->mesh + plate-with-holes helpers from the single-filament pad
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from make_calibration_pad import _mesh_xml, write_stl, _plate_with_holes  # noqa: E402
-from bambu_mix3mf import write_bambu_color_mix_3mf  # noqa: E402
+from bambu_mix3mf import write_bambu_color_mix_3mf, default_template  # noqa: E402
 
 
 # --------------------------------------------------------------------------- #
@@ -286,9 +286,13 @@ def main(argv=None):
     p.add_argument("--marker-h-mm", type=float, default=0.4)
     p.add_argument("--marker-gap-mm", type=float, default=1.5)
     p.add_argument("--also-stl", action="store_true")
-    p.add_argument("--bambu-template",
-                   help="a real Bambu color-mix .3mf export; when given, also "
-                        "write mixture_pad_bambu.3mf with all mix ratios pre-set")
+    p.add_argument("--bambu-template", default=None,
+                   help="Bambu .3mf export to template from; defaults to the "
+                        "bundled P2S template so the ratios open pre-set. Pass "
+                        "your own export for a different machine")
+    p.add_argument("--plain", action="store_true",
+                   help="write a plain 3MF (no embedded mix ratios; Bambu flags "
+                        "it 'not from Bambu Lab')")
     p.add_argument("--out-dir", default=None)
     opts = p.parse_args(argv)
 
@@ -308,17 +312,18 @@ def main(argv=None):
         json.dump(layout, f, indent=2)
     write_preview(layout, prev)
 
-    # With a Bambu template, mixture_pad.3mf IS the Bambu project (ratios pre-set);
-    # without one, it's a plain 3MF (Bambu will warn "not from Bambu Lab").
-    if opts.bambu_template:
+    # mixture_pad.3mf IS the Bambu project with ratios pre-set (bundled template
+    # unless --plain or a custom --bambu-template); plain has no embedded mixes.
+    template = None if opts.plain else (opts.bambu_template or default_template())
+    if template:
         parts = _pad_parts(layout, pad_objs, web_boxes, mk_boxes)
-        info = write_bambu_color_mix_3mf(tmf, opts.bambu_template, BASES, parts)
+        info = write_bambu_color_mix_3mf(tmf, template, BASES, parts)
         kind = ("Bambu project, %d filament slots (1=A, 2=B, 3=black, 4-%d=mixes), "
                 "ratios pre-set" % (info["n_slots"], info["n_slots"]))
     else:
         write_3mf_objects(tmf, objects)
-        kind = ("PLAIN 3MF -- Bambu flags this 'not from Bambu Lab'; pass "
-                "--bambu-template <export>.3mf for a real Bambu project")
+        kind = ("PLAIN 3MF, no embedded mixes -- Bambu flags 'not from Bambu "
+                "Lab'; drop --plain for a real Bambu project")
 
     stls = ""
     if opts.also_stl:
