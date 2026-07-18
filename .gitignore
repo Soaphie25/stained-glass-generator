@@ -229,7 +229,10 @@ color_*.svg
 
 # Filament calibration generated pads + analyzer/solver output
 filament/pad/
+filament/mixpad/
 filament/cal_*/
 filament/cals/
 filament/cal_out/
 filament/recipes/
+# Bambu color-mix 3MF exports used as templates (contain personal printer profile)
+test_*mix.3mf

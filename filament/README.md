@@ -91,6 +91,44 @@ Model: `T_c = T0_c * exp(-sum_i a_ic * t_i)` per channel; predicted linear colou
 print has one pair of outer interfaces) — a measured 2-stack will later refine the
 cross-term. A single filament reproduces its calibration exactly.
 
+## Sub-layer colour mixing (experimental, Bambu Studio Color Mixing)
+
+An alternative to stacking whole-layer blocks: within one solid part, Bambu Studio
+interleaves thin alternating sublayers of 2–3 filaments at a ratio, and the backlit
+eye blends them. Same physics baseline as full-layer (Beer–Lambert on the mix
+fractions), plus an interface-scatter term calibrated separately.
+
+**Calibrate a filament pair** — `make_mixture_pad.py` emits an 11-pad ramp (pad 0 =
+pure A … pad 10 = pure B). Each pad is a solid block **tagged with a mix ratio**;
+Bambu does the sublayer slicing. Pass a real Bambu color-mix `.3mf` export as the
+template so printer/filament settings match your machine and the ratios open
+pre-set (no color-triangle dragging):
+
+```bash
+python3 filament/make_mixture_pad.py --bambu-template your_bambu_export.3mf
+# -> filament/mixpad/mixture_pad_bambu.3mf  (12 filament slots: 1=A, 2=B, 3=black,
+#    4-12 = the 9 mixes; enable_mixed_color_sublayer=1)
+```
+
+**The mixture model** — `mixture.py`. Requires the full-layer calibration of each
+filament as the baseline (`ln T = b − a·t`, exact at the pure ends). It fits a
+per-filament scatter `σ_X` from each pair's ramp asymmetry, solved jointly across
+pairs so a shared filament stays consistent. Then `T_c = T0·exp(−[base + scatter])`
+with `scatter = T·Σ_i σ_i·f_i²(1−f_i)` predicts **any** pair (incl. one never
+printed — A–C from A–B + B–C) and **3-filament** mixes from the same pair-calibrated
+σ. A pair's own measured ramp overrides the generalized prediction when they differ.
+
+```bash
+python3 filament/mixture.py selftest   # recovers σ; predicts unseen A-C + 3-mixes
+```
+
+**`bambu_mix3mf.py`** — the reusable writer that turns parts (each tagged with a
+base filament or a mix ratio) into a Bambu color-mix 3MF: de-duplicates distinct
+mixes into virtual filament slots, extends every per-filament config array to the
+new slot count (handling the dual-nozzle ×2-variant arrays), and preserves the
+template's Bambu markers so it loads as a genuine project. The stained-glass model
+generator will reuse this to emit per-pane recipes.
+
 ### Self-tests (no printer needed)
 
 The analyser can render synthetic backlit-pad photos from a known ground-truth
@@ -102,6 +140,8 @@ python3 filament/analyze_calibration.py selftest --out-dir /tmp/cal
 # -> SELF-TEST PASSED, recovered absorption within <0.01/mm of ground truth
 python3 filament/solve_recipe.py selftest
 # -> SELF-TEST PASSED, planted recipes recovered to dE<=2
+python3 filament/mixture.py selftest
+# -> SELF-TEST PASSED, unseen A-C pair + 3-filament mixes predicted to dE<1.5
 ```
 
 ## Roadmap

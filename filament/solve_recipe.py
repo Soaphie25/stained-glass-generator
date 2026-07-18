@@ -7,6 +7,16 @@ and a set of TARGET colours (hex, e.g. the SVG generator's ``color_NN_<hex>``
 palette), find for each target the stack of filaments + thicknesses whose
 backlit-white appearance best matches it (minimum Lab Delta-E).
 
+Modes (``--mode``):
+  * ``full-layer`` (default) -- each filament contributes a block of whole layers;
+    a pane is one filament, or a stack of a few, each at its own thickness.  This
+    is the finished, print-once-per-filament model below.
+  * ``sub-layer``  -- EXPERIMENTAL, uses Bambu Studio "Color Mixing": 2-3 same
+    material filaments are interleaved as thin alternating sub-layers at a chosen
+    RATIO over a total thickness.  In backlit transmission this matches full-layer
+    stacking in pure absorption, but the extra internal interfaces add scatter, so
+    it needs its OWN mixture calibration.  (Awaiting spec -- not yet implemented.)
+
 Model (per channel c), a stack of filaments i at thicknesses t_i, lit from behind
 by white:
     T_c = T0_c * exp(- sum_i a_ic * t_i)          (Beer-Lambert; a from calib)
@@ -346,6 +356,10 @@ def main(argv=None):
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sv = sub.add_parser("solve", help="solve recipes for a target palette")
+    sv.add_argument("--mode", choices=["full-layer", "sub-layer"],
+                    default="full-layer",
+                    help="full-layer (default): whole-layer filament blocks. "
+                         "sub-layer: Bambu Studio Color Mixing (experimental).")
     sv.add_argument("--cal", action="append",
                     help="filament calibration: name=path/to/calibration.json "
                          "(repeatable)")
@@ -369,6 +383,11 @@ def main(argv=None):
     if opts.cmd == "selftest":
         return run_selftest(opts.out_dir)
 
+    if opts.mode == "sub-layer":
+        raise SystemExit(
+            "sub-layer mixture mode (Bambu Studio Color Mixing) is not yet "
+            "implemented -- awaiting spec.  Use --mode full-layer for now.")
+
     pool = _load_pool(opts)
     if not pool:
         raise SystemExit("error: no calibrations (use --cal or --cal-dir)")
@@ -386,8 +405,8 @@ def main(argv=None):
                             tol_de=opts.tol_de) for h in targets]
     os.makedirs(opts.out_dir, exist_ok=True)
     with open(os.path.join(opts.out_dir, "recipes.json"), "w") as f:
-        json.dump({"filaments": [m.name for m in pool], "recipes": recipes},
-                  f, indent=2)
+        json.dump({"mode": opts.mode, "filaments": [m.name for m in pool],
+                   "recipes": recipes}, f, indent=2)
     write_swatches(recipes, os.path.join(opts.out_dir, "swatches.png"))
     print_table(recipes)
     sys.stderr.write("\npool: %s | %d targets -> %s\n" %
