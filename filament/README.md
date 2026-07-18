@@ -13,18 +13,26 @@ stock Python with just those two packages.
 
 ### 1. Generate a calibration pad — `make_calibration_pad.py`
 
-A depth ramp: a grid of square cells 0.1 → 2.0 mm thick (0.1 mm steps = 20 cells),
-in one transparent filament, with **opaque black register markers** at the 4
-corners (a separate part you assign to black filament) plus an orientation dot.
+A continuous transparent **base plate** (default 0.4 mm) with a grid of square
+cells built on top, so the whole thing is **one rigid piece** — the cells stay
+fixed relative to the markers however you set it on the screen. Each cell's total
+light path is `base_plate + increment` (increments 0.1 → 2.0 mm in 0.1 steps = 20
+cells → totals 0.5 → 2.4 mm); we fit transmittance against that total, so the base
+plate is just part of every slab and doesn't bias the fit. **Opaque black register
+markers** sit as a thin cap on the 4 corners (a separate part for your black
+filament) plus an orientation dot; because the black is top-layers-only, the
+slicer needs a single filament change near the end of the print. **Reference
+windows are real holes** through the plate, giving true bare-screen samples.
 
 ```bash
 python3 filament/make_calibration_pad.py          # -> filament/pad/{calibration_pad.3mf, layout.json, preview.png}
 ```
 
 Sized to lie *inside* a phone screen (default 64×138 mm active area → 58×132 mm
-pad). Print at 0.1 mm layer height so the thicknesses are exact. `layout.json`
-records every cell / reference-window / marker position in millimetres — the
-analyser reads it.
+pad). Print at 0.1 mm layer height (divides both the base plate and the step) so
+thicknesses are exact. `layout.json` records every cell / reference-window /
+marker position in millimetres and each cell's total thickness — the analyser
+reads it.
 
 ### 2. Photograph the printed pad
 
@@ -70,7 +78,7 @@ python3 filament/analyze_calibration.py selftest --out-dir /tmp/cal
 
 ## Roadmap
 
-- [x] Calibration-pad generator (`make_calibration_pad.py`)
+- [x] Calibration-pad generator (`make_calibration_pad.py`) — one rigid base-plate part
 - [x] Photo analyser (`analyze_calibration.py`), synthetic-validated
 - [ ] Validate on a real printed + photographed pad
 - [ ] Mixture solver: SVG palette (`color_NN_<hex>`) → per-pane recipe

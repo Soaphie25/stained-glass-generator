@@ -14,16 +14,23 @@ Outputs (default into ``filament/pad/``):
   * ``calibration_pad_preview.png`` -- top-view sketch to eyeball before printing.
 
 Design (all one transparent filament, so NO coloured fiducials):
-  * A grid of CELLS, each a square tower whose height is the calibrated
-    thickness (0.1, 0.2, ... up to --max-mm, in --step-mm steps).
-  * The gaps between cells + the border are BARE-SCREEN reference windows
-    (needed to normalise out per-photo exposure / white-balance / brightness).
-  * A thin base frame + inter-cell bridges hold it together as one piece.
-  * A solid ORIENTATION MARKER tower in a top header strip disambiguates which
-    corner is which (the pad outline gives the 4 corners for the warp).
+  * A continuous transparent BASE PLATE (--base-plate-mm) spans the whole pad and
+    makes it ONE RIGID PIECE, so the cells stay fixed relative to the markers no
+    matter how you set it on the screen.  (The old design connected cells with
+    single-layer bridges and left the markers on a *separate* frame piece -- the
+    cells could shift relative to the markers, so sampling positions were lost.)
+  * A grid of CELLS built ON TOP of the base plate; each cell's total light path
+    is  base_plate + increment  (increment = --step-mm, 2*--step-mm, ... up to
+    --base-plate-mm + --max-mm).  We fit transmittance vs. this TOTAL thickness,
+    so the base plate is just part of every slab -- it does not bias the fit.
+  * Reference windows are real HOLES cut through the base plate, giving true
+    bare-screen samples to normalise out per-photo exposure / white-balance /
+    brightness gradients.
+  * BLACK opaque register markers sit on the plate (a separate part for your
+    black filament): 4 corners + an orientation dot next to the top-left one.
 
-Print notes: slice at a layer height that divides --step-mm (e.g. 0.1 mm steps
--> 0.10 or 0.05 mm layers) so the thicknesses are exact.  100% infill, transparent
+Print notes: slice at a layer height that divides both --base-plate-mm and
+--step-mm (e.g. 0.1 mm layers) so thicknesses are exact.  100% infill, transparent
 filament, no top/bottom colour changes.
 """
 import argparse
@@ -157,91 +164,100 @@ def write_3mf(path, body_boxes, marker_boxes, offset=(10.0, 10.0),
 # --------------------------------------------------------------------------- #
 # Layout
 # --------------------------------------------------------------------------- #
+def _plate_with_holes(x0, y0, x1, y1, z0, z1, holes):
+    """Tile rectangle [x0,x1]x[y0,y1] (height z0..z1) into axis-aligned boxes,
+    dropping any sub-tile whose centre lands inside a hole rect.
+
+    Our box mesh writer has no boolean subtraction, so we decompose
+    plate-minus-holes on the grid formed by the hole edges.  holes: list of
+    (hx0, hy0, hx1, hy1).
+    """
+    xs = sorted({x0, x1, *(h[0] for h in holes), *(h[2] for h in holes)})
+    ys = sorted({y0, y1, *(h[1] for h in holes), *(h[3] for h in holes)})
+    xs = [x for x in xs if x0 - 1e-9 <= x <= x1 + 1e-9]
+    ys = [y for y in ys if y0 - 1e-9 <= y <= y1 + 1e-9]
+    boxes = []
+    for i in range(len(xs) - 1):
+        for j in range(len(ys) - 1):
+            cx, cy = (xs[i] + xs[i + 1]) / 2, (ys[j] + ys[j + 1]) / 2
+            if any(hx0 < cx < hx1 and hy0 < cy < hy1
+                   for (hx0, hy0, hx1, hy1) in holes):
+                continue
+            boxes.append((xs[i], ys[j], z0, xs[i + 1], ys[j + 1], z1))
+    return boxes
+
+
 def build_layout(opts):
-    """Compute pad geometry; return (layout dict, boxes list)."""
+    """Compute pad geometry; return (layout dict, body_boxes, marker_boxes)."""
     n = int(round(opts.max_mm / opts.step_mm))
-    thicks = [round((i + 1) * opts.step_mm, 4) for i in range(n)]
+    increments = [round((i + 1) * opts.step_mm, 4) for i in range(n)]
+    base = opts.base_plate_mm                   # continuous rigid base plate
 
     pad_w = opts.screen_w_mm - 2 * opts.margin_mm
     pad_h = opts.screen_h_mm - 2 * opts.margin_mm
     if pad_w <= 20 or pad_h <= 40:
         raise SystemExit("error: screen minus margins is too small for a pad")
 
-    frame = opts.frame_mm
     header = opts.header_mm
-    base = opts.base_mm
+    edge = opts.edge_mm                         # clear plate border around grid
 
-    # choose grid columns so cells are as large as possible but reasonable
     cols = opts.cols
     rows = int(np.ceil(n / cols))
 
-    grid_x0 = frame
-    grid_x1 = pad_w - frame
-    grid_y0 = frame                     # bottom
-    grid_y1 = pad_h - frame - header    # leave header strip at the very top
+    grid_x0 = edge
+    grid_x1 = pad_w - edge
+    grid_y0 = edge                              # bottom
+    grid_y1 = pad_h - edge - header             # leave header strip at the top
     gw = grid_x1 - grid_x0
     gh = grid_y1 - grid_y0
     pitch_x = gw / cols
     pitch_y = gh / rows
-    cell = min(pitch_x, pitch_y) * opts.cell_fill
-    cell = max(opts.min_cell_mm, cell)
+    csz = min(pitch_x, pitch_y) * opts.cell_fill
+    csz = max(opts.min_cell_mm, csz)
 
-    boxes = []
-
-    # base frame (perimeter, thickness = base) for connectivity + outline
-    boxes += [
-        (0, 0, 0, pad_w, frame, base),                      # bottom edge
-        (0, pad_h - frame, 0, pad_w, pad_h, base),          # top edge
-        (0, 0, 0, frame, pad_h, base),                      # left edge
-        (pad_w - frame, 0, 0, pad_w, pad_h, base),          # right edge
-    ]
-
+    # cells built ON TOP of the plate; total light path = base + increment
     cells = []
-    for i, t in enumerate(thicks):
+    for i, inc in enumerate(increments):
         r = i // cols          # 0 = top row (thin), increasing downward
         c = i % cols
         cx = grid_x0 + (c + 0.5) * pitch_x
         cy = grid_y1 - (r + 0.5) * pitch_y      # top row highest y
-        x0, x1 = cx - cell / 2, cx + cell / 2
-        y0, y1 = cy - cell / 2, cy + cell / 2
-        boxes.append((x0, y0, 0.0, x1, y1, max(t, base)))
-        cells.append({"index": i, "thickness_mm": t,
+        cells.append({"index": i, "thickness_mm": round(base + inc, 4),
+                      "increment_mm": inc,
                       "cx": round(cx, 3), "cy": round(cy, 3),
-                      "w": round(cell, 3), "h": round(cell, 3)})
+                      "w": round(csz, 3), "h": round(csz, 3)})
 
-    # inter-cell bridges (thin, at base height) so nothing is an island
-    bw = opts.bridge_mm
-    for i in range(len(cells)):
-        r, c = i // cols, i % cols
-        cxi, cyi = cells[i]["cx"], cells[i]["cy"]
-        if c + 1 < cols and (i + 1) < len(cells):        # bridge to right
-            cxj = cells[i + 1]["cx"]
-            boxes.append((cxi + cell / 2, cyi - bw / 2, 0.0,
-                          cxj - cell / 2, cyi + bw / 2, base))
-        if (i + cols) < len(cells):                      # bridge downward
-            cyj = cells[i + cols]["cy"]
-            boxes.append((cxi - bw / 2, cyj + cell / 2, 0.0,
-                          cxi + bw / 2, cyi - cell / 2, base))
-
-    # reference windows = gap centres (bare screen sampled there by the analyser)
-    windows = []
+    # reference windows = HOLES through the plate at the grid's gap corners
+    wr = min(pitch_x, pitch_y) * 0.14
+    windows, holes = [], []
     for r in range(rows + 1):
         for c in range(cols + 1):
             wx = grid_x0 + c * pitch_x
             wy = grid_y1 - r * pitch_y
-            if frame + 1 < wx < pad_w - frame - 1 and \
-               frame + 1 < wy < pad_h - frame - 1:
+            if edge + 1 < wx < pad_w - edge - 1 and \
+               edge + 1 < wy < pad_h - edge - 1:
                 windows.append({"cx": round(wx, 3), "cy": round(wy, 3),
-                                "r": round(min(pitch_x, pitch_y) * 0.12, 3)})
+                                "r": round(wr, 3)})
+                holes.append((wx - wr, wy - wr, wx + wr, wy + wr))
 
-    # BLACK opaque register markers at the 4 corners -> a SEPARATE STL part the
-    # user assigns to black filament (AMS / 2-material).  Opaque black reads on
-    # ANY screen colour AND any screen size (a small pad on a large iPad), unlike
-    # the faint tinted pad outline.  An extra dot inside the top-left corner
-    # fixes orientation (which corner is which).
+    boxes = []
+    # 1) continuous transparent base plate with the window holes (z 0..base)
+    boxes += _plate_with_holes(0, 0, pad_w, pad_h, 0.0, base, holes)
+    # 2) cells rising from the plate top (z base..base+increment)
+    for cell, inc in zip(cells, increments):
+        x0, x1 = cell["cx"] - csz / 2, cell["cx"] + csz / 2
+        y0, y1 = cell["cy"] - csz / 2, cell["cy"] + csz / 2
+        boxes.append((x0, y0, base, x1, y1, round(base + inc, 4)))
+
+    # BLACK opaque register caps sitting ON TOP of the plate corners -> a SEPARATE
+    # part for your black filament.  Black is opaque, so it hides the transparent
+    # base beneath it; and because it only occupies the TOP layers, the slicer
+    # needs a single change to black near the end of the print (minimal swap
+    # time).  A dot next to the top-left corner fixes orientation.
     mk = opts.marker_mm
     inset = opts.marker_inset_mm
-    mh = opts.marker_h_mm
+    cap = opts.marker_h_mm
+    mz0, mz1 = base, round(base + cap, 4)
     corners = {
         "bottom_left":  (inset, inset),
         "bottom_right": (pad_w - inset - mk, inset),
@@ -251,13 +267,13 @@ def build_layout(opts):
     marker_boxes = []
     reg = {}
     for name, (mx0, my0) in corners.items():
-        marker_boxes.append((mx0, my0, 0.0, mx0 + mk, my0 + mk, mh))
+        marker_boxes.append((mx0, my0, mz0, mx0 + mk, my0 + mk, mz1))
         reg[name] = {"cx": round(mx0 + mk / 2, 3), "cy": round(my0 + mk / 2, 3),
                      "w": mk, "h": mk}
     dot = mk * 0.45                              # orientation dot by top-left
     dx0 = inset + mk + opts.marker_gap_mm
     dy0 = pad_h - inset - dot
-    marker_boxes.append((dx0, dy0, 0.0, dx0 + dot, dy0 + dot, mh))
+    marker_boxes.append((dx0, dy0, mz0, dx0 + dot, dy0 + dot, mz1))
     reg["orientation_dot"] = {"cx": round(dx0 + dot / 2, 3),
                               "cy": round(dy0 + dot / 2, 3),
                               "w": round(dot, 3), "h": round(dot, 3),
@@ -269,13 +285,16 @@ def build_layout(opts):
         "margin_mm": opts.margin_mm,
         "pad_w_mm": round(pad_w, 3), "pad_h_mm": round(pad_h, 3),
         "step_mm": opts.step_mm, "max_mm": opts.max_mm,
-        "cols": cols, "rows": rows, "cell_mm": round(cell, 3),
-        "base_mm": base,
+        "cols": cols, "rows": rows, "cell_mm": round(csz, 3),
+        "base_plate_mm": base,
+        "thickness_note": "cells[].thickness_mm is the TOTAL light path "
+                          "(base_plate_mm + increment_mm); fit transmittance "
+                          "against it.",
         "origin": "bottom-left",
         "pad_corners": [[0, 0], [pad_w, 0], [pad_w, pad_h], [0, pad_h]],
         "register_markers": {
-            "color": "black opaque (print as the separate markers STL)",
-            "height_mm": mh, "size_mm": mk,
+            "color": "black opaque cap on top of the plate (separate markers part)",
+            "cap_mm": cap, "size_mm": mk, "z_mm": [mz0, mz1],
             "corners": reg,
         },
         "cells": cells,
@@ -299,16 +318,19 @@ def write_preview(layout, path, px_per_mm=8):
     def Y(y):                                   # flip: pad y-up -> image y-down
         return int((layout["pad_h_mm"] - y) * px_per_mm) + 1
 
+    # continuous transparent base plate (faint blue tint)
     d.rectangle([X(0), Y(layout["pad_h_mm"]), X(layout["pad_w_mm"]), Y(0)],
-                outline=(120, 120, 130), width=2)
-    for w in layout["reference_windows"]:       # bare-screen refs = light dots
+                fill=(214, 228, 240), outline=(120, 120, 130), width=2)
+    for w in layout["reference_windows"]:       # window HOLES = bare screen
         rr = w["r"] * px_per_mm
         d.ellipse([X(w["cx"]) - rr, Y(w["cy"]) - rr,
                    X(w["cx"]) + rr, Y(w["cy"]) + rr],
-                  fill=(255, 255, 255), outline=(180, 180, 190))
-    mx = layout["max_mm"]
-    for c in layout["cells"]:                   # cells shaded by thickness
-        g = int(235 - 175 * (c["thickness_mm"] / mx))   # thicker = darker
+                  fill=(255, 255, 255), outline=(150, 150, 160))
+    base = layout.get("base_plate_mm", 0.0)
+    tmin, tmax = base + layout["step_mm"], base + layout["max_mm"]
+    for c in layout["cells"]:                   # cells shaded by TOTAL thickness
+        f = (c["thickness_mm"] - tmin) / max(tmax - tmin, 1e-6)
+        g = int(225 - 170 * f)                  # thicker = darker
         x0, y0 = X(c["cx"] - c["w"] / 2), Y(c["cy"] + c["h"] / 2)
         x1, y1 = X(c["cx"] + c["w"] / 2), Y(c["cy"] - c["h"] / 2)
         d.rectangle([x0, y0, x1, y1], fill=(g, g, g), outline=(90, 90, 90))
@@ -343,17 +365,19 @@ def main(argv=None):
                    help="cell size as fraction of grid pitch (default 0.7)")
     p.add_argument("--min-cell-mm", type=float, default=6.0,
                    help="minimum cell edge (default 6)")
-    p.add_argument("--frame-mm", type=float, default=2.0)
+    p.add_argument("--edge-mm", type=float, default=2.0,
+                   help="clear plate border around the cell grid (default 2)")
     p.add_argument("--header-mm", type=float, default=9.0)
-    p.add_argument("--base-mm", type=float, default=0.1,
-                   help="connective base/frame thickness (default 0.1 = 1 layer)")
-    p.add_argument("--bridge-mm", type=float, default=1.5)
+    p.add_argument("--base-plate-mm", type=float, default=0.4,
+                   help="continuous rigid base-plate thickness; makes the pad one "
+                        "piece and is added to every cell's light path (default 0.4)")
     p.add_argument("--marker-mm", type=float, default=6.0,
                    help="black corner register-marker size (default 6)")
     p.add_argument("--marker-inset-mm", type=float, default=1.0,
                    help="register-marker inset from pad edge (default 1)")
-    p.add_argument("--marker-h-mm", type=float, default=1.0,
-                   help="black marker height; opaque to block backlight (default 1)")
+    p.add_argument("--marker-h-mm", type=float, default=0.4,
+                   help="black cap thickness on top of the plate; opaque to block "
+                        "backlight, top-layers-only = one filament swap (default 0.4)")
     p.add_argument("--marker-gap-mm", type=float, default=1.5,
                    help="gap from top-left corner to the orientation dot (default 1.5)")
     p.add_argument("--also-stl", action="store_true",
@@ -383,17 +407,21 @@ def main(argv=None):
         write_stl(stl_mark, marker_boxes)
         stls = "  %s\n  %s\n" % (stl_body, stl_mark)
 
+    base = layout["base_plate_mm"]
     sys.stderr.write(
-        "pad %.1f x %.1f mm inside a %.0f x %.0f mm screen | %d cells "
-        "%.1f-%.1f mm | cell %.1f mm\n"
+        "pad %.1f x %.1f mm inside a %.0f x %.0f mm screen | %d cells, total "
+        "thickness %.1f-%.1f mm (base plate %.2f + %.1f-%.1f) | cell %.1f mm\n"
         "wrote:\n"
         "  %s   <- open directly in the slicer (body=transparent, "
         "corners=black, already grouped & aligned)\n%s  %s\n  %s\n"
         "Assign the black 'Black' part to your black filament, keep the body on "
-        "the transparent filament, slice at %.2f mm layer height.\n" % (
+        "the transparent filament, slice at %.2f mm layer height. The black caps "
+        "are top-layers-only, so the slicer needs one change to black near the "
+        "end of the print.\n" % (
             layout["pad_w_mm"], layout["pad_h_mm"],
             opts.screen_w_mm, opts.screen_h_mm, len(layout["cells"]),
-            opts.step_mm, opts.max_mm, layout["cell_mm"],
+            base + opts.step_mm, base + opts.max_mm, base, opts.step_mm,
+            opts.max_mm, layout["cell_mm"],
             tmf, stls, lay, prev, opts.step_mm))
     return 0
 

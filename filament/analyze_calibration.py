@@ -110,15 +110,17 @@ def _components(mask, min_area):
     return comps
 
 
-def detect_markers(rgb, dark_frac=0.12):
+def detect_markers(rgb, dark_frac=0.10):
     """Find the 4 corner markers + orientation dot in an HxWx3 uint8 image.
 
     Uses ``V = max(R,G,B)`` so it works over any screen colour (a pure-blue
-    screen has low luminance but high V).  Returns (corners, dot) where corners
-    is a list of 4 {cx,cy,area} and dot is the smaller nearby blob (or None).
+    screen has low luminance but high V).  The 4 corner markers are the
+    OUTERMOST dark blobs -- picked by extreme position, not by area -- because a
+    thick, strongly-absorbing cell can go nearly as dark as a marker but is
+    always interior to them.  Returns (corners, dot).
     """
     v = rgb.max(axis=2).astype(np.float32)
-    thr = max(20.0, dark_frac * float(np.percentile(v, 95)))
+    thr = max(18.0, dark_frac * float(np.percentile(v, 95)))
     mask = v < thr
 
     h, w = v.shape
@@ -129,10 +131,24 @@ def detect_markers(rgb, dark_frac=0.12):
         raise SystemExit("error: found only %d marker-like blobs (need 4). "
                          "Try adjusting --dark-frac or check the photo." %
                          len(square))
-    square.sort(key=lambda c: c["area"], reverse=True)
-    corners = square[:4]
-    # the dot is a smaller square blob sitting next to one corner
-    rest = square[4:]
+    pts = np.array([[c["cx"], c["cy"]] for c in square], float)
+    s, diff = pts[:, 0] + pts[:, 1], pts[:, 0] - pts[:, 1]
+    # the 4 outermost blobs: extremes of x+y and x-y (image corners)
+    idx = []
+    for k in (int(np.argmin(s)), int(np.argmax(s)),
+              int(np.argmin(diff)), int(np.argmax(diff))):
+        if k not in idx:
+            idx.append(k)
+    if len(idx) < 4:                                # degenerate: top up by
+        centroid = pts.mean(axis=0)                 # distance from centroid
+        for k in np.argsort(-((pts - centroid) ** 2).sum(axis=1)):
+            if int(k) not in idx:
+                idx.append(int(k))
+            if len(idx) == 4:
+                break
+    corners = [square[i] for i in idx]
+    rest = [square[i] for i in range(len(square)) if i not in idx]
+    # the dot is a SMALL blob (<< marker) sitting next to one corner
     corner_area = np.median([c["area"] for c in corners])
     dot = None
     dot_cands = [c for c in rest if c["area"] < 0.6 * corner_area]
@@ -249,7 +265,7 @@ def fit_absorption(thick, trans):
 # --------------------------------------------------------------------------- #
 # Core analysis of one filament (multiple screen photos)
 # --------------------------------------------------------------------------- #
-def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.12,
+def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10,
             diag_dir=None):
     """photos: dict screen_colour -> HxWx3 uint8 array.  Returns calibration dict."""
     cells = layout["cells"]
@@ -522,9 +538,9 @@ def _load_or_make_layout(out_dir):
     import make_calibration_pad as mk
     ns = argparse.Namespace(
         screen_w_mm=64.0, screen_h_mm=138.0, margin_mm=3.0, step_mm=0.1,
-        max_mm=2.0, cols=4, cell_fill=0.7, min_cell_mm=6.0, frame_mm=2.0,
-        header_mm=9.0, base_mm=0.1, bridge_mm=1.5, marker_mm=6.0,
-        marker_inset_mm=1.0, marker_h_mm=1.0, marker_gap_mm=1.5)
+        max_mm=2.0, cols=4, cell_fill=0.7, min_cell_mm=6.0, edge_mm=2.0,
+        header_mm=9.0, base_plate_mm=0.4, marker_mm=6.0,
+        marker_inset_mm=1.0, marker_h_mm=0.4, marker_gap_mm=1.5)
     layout, _, _ = mk.build_layout(ns)
     return layout
 
@@ -550,7 +566,7 @@ def main(argv=None):
     an.add_argument("--white"), an.add_argument("--red")
     an.add_argument("--green"), an.add_argument("--blue")
     an.add_argument("--out-dir", default="filament/cal_out")
-    an.add_argument("--dark-frac", type=float, default=0.12,
+    an.add_argument("--dark-frac", type=float, default=0.10,
                     help="marker darkness threshold as frac of screen brightness")
     an.add_argument("--ref-floor-frac", type=float, default=0.18)
 
