@@ -227,7 +227,9 @@ __marimo__/
 *_preview.png
 color_*.svg
 
-# Filament calibration generated pads + analyzer output
+# Filament calibration generated pads + analyzer/solver output
 filament/pad/
 filament/cal_*/
+filament/cals/
 filament/cal_out/
+filament/recipes/

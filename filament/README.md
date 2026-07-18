@@ -65,7 +65,33 @@ per channel. Output: `calibration.json` (headline `primary_absorption_per_mm` =
 the red/green/blue-screen diagonal), plus `detect_*.png` overlays and a
 `curves.png` transmittance plot.
 
-### Self-test (no printer needed)
+### 4. Solve print recipes — `solve_recipe.py`
+
+Given the per-filament calibrations and a set of target colours, find the stack of
+filaments + thicknesses that best matches each target under a white backlight
+(minimum Lab Delta-E). A pane is one filament when that suffices; the solver mixes
+up to `--max-filaments` (default 3) from the pool.
+
+```bash
+python3 filament/solve_recipe.py solve \
+    --cal-dir filament/cals \
+    --from-svg-dir sample1_fragments \
+    --out-dir filament/recipes
+```
+
+Reads targets straight from the SVG generator's `color_NN_<hex>` fragment
+filenames (or `--targets a1b2c3,ffcc00`). Writes `recipes.json` and a
+`swatches.png` (target vs. predicted colour). The reported Delta-E is honest about
+**gamut**: transparent filaments can only subtract light, so saturated targets a
+given pool can't reach show a high Delta-E — add a filament that passes the
+missing primary.
+
+Model: `T_c = T0_c * exp(-sum_i a_ic * t_i)` per channel; predicted linear colour
+= transmittance under white. Stacks use one shared surface term `T0` (the fused
+print has one pair of outer interfaces) — a measured 2-stack will later refine the
+cross-term. A single filament reproduces its calibration exactly.
+
+### Self-tests (no printer needed)
 
 The analyser can render synthetic backlit-pad photos from a known ground-truth
 filament (perspective warp + brightness gradient + noise) and check it recovers
@@ -74,12 +100,16 @@ the coefficients — this is how the pipeline was validated before any real prin
 ```bash
 python3 filament/analyze_calibration.py selftest --out-dir /tmp/cal
 # -> SELF-TEST PASSED, recovered absorption within <0.01/mm of ground truth
+python3 filament/solve_recipe.py selftest
+# -> SELF-TEST PASSED, planted recipes recovered to dE<=2
 ```
 
 ## Roadmap
 
 - [x] Calibration-pad generator (`make_calibration_pad.py`) — one rigid base-plate part
 - [x] Photo analyser (`analyze_calibration.py`), synthetic-validated
-- [ ] Validate on a real printed + photographed pad
-- [ ] Mixture solver: SVG palette (`color_NN_<hex>`) → per-pane recipe
+- [x] Mixture solver (`solve_recipe.py`): palette → per-pane recipe
       (filament + thickness + predicted colour + ΔE), stacking ≤3 filaments
+- [ ] Validate on a real printed + photographed pad
+- [ ] Refine stack model with a measured 2-filament stack (cross-term / order)
+- [ ] Upgrade Delta-E CIE76 → CIEDE2000; integrate directly into the SVG generator
