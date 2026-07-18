@@ -226,3 +226,6 @@ __marimo__/
 *_preview.svg
 *_preview.png
 color_*.svg
+
+# Filament calibration generated pads
+filament/pad/
