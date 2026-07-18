@@ -399,10 +399,23 @@ def main(argv=None):
     tmf = os.path.join(out_dir, "calibration_pad.3mf")
     lay = os.path.join(out_dir, "layout.json")
     prev = os.path.join(out_dir, "calibration_pad_preview.png")
-    write_3mf(tmf, body_boxes, marker_boxes)
     with open(lay, "w") as f:
         json.dump(layout, f, indent=2)
     write_preview(layout, prev)
+
+    # With a Bambu template, calibration_pad.3mf IS the Bambu project; without one
+    # it's a plain 3MF (Bambu warns "not from Bambu Lab" and imports geometry only).
+    if opts.bambu_template:
+        from bambu_mix3mf import write_bambu_color_mix_3mf
+        bases = [{"colour": "#BFD8FF"}, {"colour": "#111111"}]   # body, black
+        parts = [{"name": "body", "boxes": body_boxes, "slot": 1},
+                 {"name": "markers", "boxes": marker_boxes, "slot": 2}]
+        write_bambu_color_mix_3mf(tmf, opts.bambu_template, bases, parts)
+        kind = "Bambu project (slot 1=transparent body, slot 2=black markers)"
+    else:
+        write_3mf(tmf, body_boxes, marker_boxes)
+        kind = ("PLAIN 3MF -- Bambu flags 'not from Bambu Lab'; pass "
+                "--bambu-template <export>.3mf for a real Bambu project")
 
     stls = ""
     if opts.also_stl:
@@ -412,23 +425,13 @@ def main(argv=None):
         write_stl(stl_mark, marker_boxes)
         stls = "  %s\n  %s\n" % (stl_body, stl_mark)
 
-    if opts.bambu_template:                         # genuine Bambu project (no mix)
-        from bambu_mix3mf import write_bambu_color_mix_3mf
-        bases = [{"colour": "#BFD8FF"}, {"colour": "#111111"}]   # body, black
-        parts = [{"name": "body", "boxes": body_boxes, "slot": 1},
-                 {"name": "markers", "boxes": marker_boxes, "slot": 2}]
-        bpath = os.path.join(out_dir, "calibration_pad_bambu.3mf")
-        write_bambu_color_mix_3mf(bpath, opts.bambu_template, bases, parts)
-        stls += ("  %s   <- opens as a Bambu project (slot 1=transparent body, "
-                 "slot 2=black markers)\n" % bpath)
-
     base = layout["base_plate_mm"]
     sys.stderr.write(
         "pad %.1f x %.1f mm inside a %.0f x %.0f mm screen | %d cells, total "
         "thickness %.1f-%.1f mm (base plate %.2f + %.1f-%.1f) | cell %.1f mm\n"
         "wrote:\n"
-        "  %s   <- open directly in the slicer (body=transparent, "
-        "corners=black, already grouped & aligned)\n%s  %s\n  %s\n"
+        "  %s\n     ^ %s (body=transparent, corners=black, grouped & aligned)"
+        "\n%s  %s\n  %s\n"
         "Assign the black 'Black' part to your black filament, keep the body on "
         "the transparent filament, slice at %.2f mm layer height. The black caps "
         "are top-layers-only, so the slicer needs one change to black near the "
@@ -437,7 +440,7 @@ def main(argv=None):
             opts.screen_w_mm, opts.screen_h_mm, len(layout["cells"]),
             base + opts.step_mm, base + opts.max_mm, base, opts.step_mm,
             opts.max_mm, layout["cell_mm"],
-            tmf, stls, lay, prev, opts.step_mm))
+            tmf, kind, stls, lay, prev, opts.step_mm))
     return 0
 
 

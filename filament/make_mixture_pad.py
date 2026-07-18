@@ -304,10 +304,21 @@ def main(argv=None):
     tmf = os.path.join(out_dir, "mixture_pad.3mf")
     lay = os.path.join(out_dir, "layout.json")
     prev = os.path.join(out_dir, "mixture_pad_preview.png")
-    write_3mf_objects(tmf, objects)
     with open(lay, "w") as f:
         json.dump(layout, f, indent=2)
     write_preview(layout, prev)
+
+    # With a Bambu template, mixture_pad.3mf IS the Bambu project (ratios pre-set);
+    # without one, it's a plain 3MF (Bambu will warn "not from Bambu Lab").
+    if opts.bambu_template:
+        parts = _pad_parts(layout, pad_objs, web_boxes, mk_boxes)
+        info = write_bambu_color_mix_3mf(tmf, opts.bambu_template, BASES, parts)
+        kind = ("Bambu project, %d filament slots (1=A, 2=B, 3=black, 4-%d=mixes), "
+                "ratios pre-set" % (info["n_slots"], info["n_slots"]))
+    else:
+        write_3mf_objects(tmf, objects)
+        kind = ("PLAIN 3MF -- Bambu flags this 'not from Bambu Lab'; pass "
+                "--bambu-template <export>.3mf for a real Bambu project")
 
     stls = ""
     if opts.also_stl:
@@ -316,23 +327,13 @@ def main(argv=None):
         write_stl(os.path.join(out_dir, "mixture_pad_markers.stl"), mk_boxes)
         stls = "  (+ body/markers STL)\n"
 
-    if opts.bambu_template:
-        parts = _pad_parts(layout, pad_objs, web_boxes, mk_boxes)
-        bpath = os.path.join(out_dir, "mixture_pad_bambu.3mf")
-        info = write_bambu_color_mix_3mf(bpath, opts.bambu_template, BASES, parts)
-        n_slots = info["n_slots"]
-        stls += ("  %s   <- Bambu 3MF, %d filament slots (1=A, 2=B, 3=black, "
-                 "4-%d=mixes), ratios pre-set\n" % (bpath, n_slots, n_slots))
-
     sys.stderr.write(
         "mixture pad %.1f x %.1f mm | %d solid pads 0..100%%B in %d%% steps | "
         "%.2f mm thick | pad %.1f mm\n"
-        "wrote:\n  %s   <- each pad is its own part; assign filament A/B mix "
-        "ratios per pad in Bambu (0%%..100%% B), 'web_A'->A, 'Black'->black\n"
-        "%s  %s\n  %s\n" % (
+        "wrote:\n  %s\n     ^ %s\n%s  %s\n  %s\n" % (
             layout["pad_w_mm"], layout["pad_h_mm"], layout["n_pads"],
             int(round(100 / opts.steps)), layout["total_thickness_mm"],
-            layout["cell_mm"], tmf, stls, lay, prev))
+            layout["cell_mm"], tmf, kind, stls, lay, prev))
     return 0
 
 
