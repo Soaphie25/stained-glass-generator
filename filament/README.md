@@ -41,6 +41,10 @@ is both the backlight and a programmable RGB source). Take one photo over each o
 **white, red, green, blue** → 4 photos per filament. The single-colour screens
 isolate one channel each; white calibrates all three.
 
+Display the bundled standard primaries `filament/screens/{white,red,green,blue}.png`
+(pure sRGB #FFFFFF/#FF0000/#00FF00/#0000FF; regenerate at your screen's resolution
+with `python3 filament/make_screens.py --width W --height H`).
+
 Practical must-dos: turn OFF True Tone / Night Shift / auto-brightness, lock camera
 exposure & white balance (or shoot RAW), avoid glare. The bare screen showing
 through the gaps between cells is used to normalise out exposure/brightness.
