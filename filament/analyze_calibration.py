@@ -557,14 +557,17 @@ def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10
             _draw_diag(rgb, H, cells, win, corners, None,
                        os.path.join(diag_dir, "detect_%s.png" % screen))
 
-    # headline: absorption per display primary (diagonal), falling back to white
+    # headline: absorption per display primary from its matching screen -- but
+    # only if that screen was WELL EXPOSED; a dim/clipped diagonal screen gives a
+    # garbage value, so fall back to the (usually reliable) white screen.
     primary = {}
     for cname, screen in (("R", "red"), ("G", "green"), ("B", "blue")):
-        src = None
-        if screen in screens and cname in screens[screen]["per_channel"]:
-            src = screens[screen]["per_channel"][cname]
-        elif "white" in screens and cname in screens["white"]["per_channel"]:
-            src = screens["white"]["per_channel"][cname]
+        diag = screens.get(screen, {})
+        dfit = diag.get("per_channel", {}).get(cname)
+        wfit = screens.get("white", {}).get("per_channel", {}).get(cname)
+        good_diag = (dfit is not None and diag.get("max_ref", 0) >= 0.3
+                     and diag.get("clip_frac", 0) <= 0.12)
+        src = dfit if good_diag else (wfit or dfit)
         if src:
             primary[cname] = round(src["a"], 5)
 
