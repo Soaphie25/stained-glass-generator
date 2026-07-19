@@ -378,8 +378,9 @@ def _prep(rgb, max_dim, blur_frac, H_probe=None):
 
 def _sample_cells_linear(layout, rgb0, max_dim, blur_frac):
     """Detect + warp + sample: returns per-cell and per-window LINEAR RGB (0..1),
-    already normalised by the reference-window plane -> per-cell transmittance."""
-    cells = layout["cells"]
+    already normalised by the reference-window plane -> per-cell transmittance.
+    Works on a thickness pad ('cells') or a mixture pad ('pads')."""
+    cells = layout.get("cells") or layout["pads"]
     cell_xy = np.array([[c["cx"], c["cy"]] for c in cells], float)
     win = layout["reference_windows"]
     win_xy = np.array([[w["cx"], w["cy"]] for w in win], float)

@@ -215,14 +215,67 @@ def run_selftest():
     return 0 if ok else 1
 
 
+def run_fit(opts):
+    """Fit per-filament sigma from a printed sub-layer mixture ramp photo."""
+    import json
+    import os
+    import analyze_calibration as A
+    from solve_recipe import load_filament, linear_to_hex, delta_e
+    with open(opts.layout) as f:
+        layout = json.load(f)
+    fA = load_filament(opts.a.split("=")[0], opts.a.split("=", 1)[1])
+    fB = load_filament(opts.b.split("=")[0], opts.b.split("=", 1)[1])
+    T = A._sample_cells_linear(layout, A._load_photo(opts.white), 1600, 0.03)[0]
+    pads = layout["pads"]
+    Tmm = layout["total_thickness_mm"]
+    pair = {"A": fA.name, "B": fB.name,
+            "ratios": [p["pct_b"] / 100.0 for p in pads],
+            "tau": [[float(x) for x in T[i]] for i in range(len(pads))]}
+    sigma, direct = fit_sigma([pair], {fA.name: fA, fB.name: fB}, Tmm)
+
+    print("fitted per-filament sigma (per mm):")
+    for n in (fA.name, fB.name):
+        print("  %-8s %s" % (n, np.round(sigma[n], 3).tolist()))
+    print("\n  %%%-3s  measured   predicted  baseline   dE(model) dE(base)" % "B")
+    des, bas = [], []
+    for i, p in enumerate(pads):
+        r = p["pct_b"] / 100.0
+        meas = np.clip(T[i], 0, 1)
+        pred = mix_tau(fA, fB, sigma[fA.name], sigma[fB.name], r, Tmm)
+        base = _baseline_tau(fA, fB, r, Tmm)
+        de, db = delta_e(meas, pred), delta_e(meas, base)
+        des.append(de)
+        bas.append(db)
+        print("  %3.0f  #%-8s #%-8s #%-8s  %6.1f  %6.1f"
+              % (p["pct_b"], linear_to_hex(meas), linear_to_hex(pred),
+                 linear_to_hex(base), de, db))
+    print("\nmodel   mean dE %.2f / max %.2f" % (np.mean(des), np.max(des)))
+    print("baseline mean dE %.2f / max %.2f  (scatter off)" % (np.mean(bas), np.max(bas)))
+    os.makedirs(opts.out_dir, exist_ok=True)
+    with open(os.path.join(opts.out_dir, "mixture_calibration.json"), "w") as f:
+        json.dump({"filaments": [fA.name, fB.name], "thickness_mm": Tmm,
+                   "sigma": {n: [float(x) for x in sigma[n]] for n in sigma},
+                   "measured_tau": pair["tau"], "ratios": pair["ratios"]}, f, indent=2)
+    print("\nwrote %s/mixture_calibration.json" % opts.out_dir)
+    return 0
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("selftest", help="synthetic sigma-recovery + A-C generalization")
+    ft = sub.add_parser("fit", help="fit sigma from a printed mixture-ramp photo")
+    ft.add_argument("--layout", required=True, help="mixture pad layout.json")
+    ft.add_argument("--white", required=True, help="photo over the white screen")
+    ft.add_argument("--a", required=True, help="A filament: name=calibration.json")
+    ft.add_argument("--b", required=True, help="B filament: name=calibration.json")
+    ft.add_argument("--out-dir", default="filament/mixcal")
     opts = p.parse_args(argv)
     if opts.cmd == "selftest":
         return run_selftest()
+    if opts.cmd == "fit":
+        return run_fit(opts)
 
 
 if __name__ == "__main__":
