@@ -50,6 +50,22 @@ CHANNELS = ("R", "G", "B")
 
 
 # --------------------------------------------------------------------------- #
+# sRGB <-> linear light.  Phone JPEGs are gamma-encoded; Beer-Lambert and
+# filament stacking are LINEAR-light laws, so we linearise before measuring
+# transmittance (median commutes with this monotonic map, so it's fine to apply
+# it after sampling the median patch).
+# --------------------------------------------------------------------------- #
+def srgb_to_linear(c):
+    c = np.asarray(c, float)
+    return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+
+
+def linear_to_srgb(c):
+    c = np.clip(np.asarray(c, float), 0, 1)
+    return np.where(c <= 0.0031308, 12.92 * c, 1.055 * c ** (1 / 2.4) - 0.055)
+
+
+# --------------------------------------------------------------------------- #
 # Geometry: homography (DLT) and point projection
 # --------------------------------------------------------------------------- #
 def homography(src, dst):
@@ -274,6 +290,66 @@ def _prep(rgb, max_dim, blur_frac, H_probe=None):
     return np.asarray(im)
 
 
+def _sample_cells_linear(layout, rgb0, max_dim, blur_frac):
+    """Detect + warp + sample: returns per-cell and per-window LINEAR RGB (0..1),
+    already normalised by the reference-window plane -> per-cell transmittance."""
+    cells = layout["cells"]
+    cell_xy = np.array([[c["cx"], c["cy"]] for c in cells], float)
+    win = layout["reference_windows"]
+    win_xy = np.array([[w["cx"], w["cy"]] for w in win], float)
+
+    rgb = _prep(rgb0, max_dim, blur_frac)
+    corners, dot = detect_markers(rgb)
+    H = order_and_fit(corners, dot, layout)
+    c0 = cells[0]
+    cpx = float(np.hypot(*(project(H, [(c0["cx"] + c0["w"] / 2, c0["cy"])])[0]
+                           - project(H, [(c0["cx"] - c0["w"] / 2, c0["cy"])])[0])))
+    smooth = np.asarray(Image.fromarray(rgb).filter(
+        ImageFilter.GaussianBlur(max(1.0, cpx * blur_frac))))
+
+    win_rgb = srgb_to_linear(np.array(
+        [sample_patch(smooth, H, w["cx"], w["cy"], 2 * w["r"], 2 * w["r"], frac=0.9)
+         for w in win], float) / 255.0)
+    good = np.isfinite(win_rgb).all(axis=1)
+    planes = fit_reference_plane(win_xy[good], win_rgb[good])
+    ref = eval_plane(planes, cell_xy)
+    cell_rgb = srgb_to_linear(np.array(
+        [sample_patch(smooth, H, c["cx"], c["cy"], c["w"], c["h"]) for c in cells],
+        float) / 255.0)
+    T = np.clip(cell_rgb / np.clip(ref, 1e-6, None), 0, 1.5)
+    return T, H, corners, dot
+
+
+def measure(layout, photos, cals=None, max_dim=1600, blur_frac=0.03):
+    """Measure each cell's transmittance/colour (no ramp fit).  If ``cals`` (a
+    {name: Filament}) is given, also predict each cell from its stack composition
+    and report Delta-E.  Returns a list of per-cell result dicts."""
+    from solve_recipe import predict_linear, linear_to_hex, linear_to_lab, delta_e
+    cells = layout["cells"]
+    Ts = {screen: _sample_cells_linear(layout, rgb, max_dim, blur_frac)[0]
+          for screen, rgb in photos.items()}
+    out = []
+    for i, c in enumerate(cells):
+        comp = c.get("composition_mm", {})
+        row = {"index": c["index"], "composition_mm": comp,
+               "thickness_mm": c.get("thickness_mm"),
+               "transmittance": {s: [round(float(x), 4) for x in Ts[s][i]]
+                                 for s in Ts}}
+        if "white" in Ts:
+            lin = np.clip(Ts["white"][i], 0, 1)
+            row["measured_hex"] = linear_to_hex(lin)
+            row["measured_lab"] = [round(float(x), 1) for x in linear_to_lab(lin)]
+            if cals and comp and all(n in cals for n in comp):
+                models = [cals[n] for n in comp]
+                thicks = [comp[n] for n in comp]
+                pred = predict_linear(models, thicks)
+                row["predicted_hex"] = linear_to_hex(pred)
+                row["predicted_lab"] = [round(float(x), 1) for x in linear_to_lab(pred)]
+                row["delta_e"] = round(delta_e(lin, pred), 2)
+        out.append(row)
+    return out
+
+
 def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10,
             max_dim=1600, blur_frac=0.03, diag_dir=None):
     """photos: dict screen_colour -> HxWx3 uint8 array.  Returns calibration dict."""
@@ -302,9 +378,11 @@ def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10
             ImageFilter.GaussianBlur(rad)))
 
         # bare-screen reference windows -> brightness plane per channel
+        # (sampled in sRGB, then LINEARISED to real light before any ratios)
         win_rgb = np.array([sample_patch(smooth, H, w["cx"], w["cy"],
                                          2 * w["r"], 2 * w["r"], frac=0.9)
                             for w in win], float)
+        win_rgb = srgb_to_linear(win_rgb / 255.0)
         good = np.isfinite(win_rgb).all(axis=1)
         planes = fit_reference_plane(win_xy[good], win_rgb[good])
 
@@ -317,6 +395,7 @@ def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10
         per_channel = {}
         cell_rgb = np.array([sample_patch(smooth, H, c["cx"], c["cy"],
                                           c["w"], c["h"]) for c in cells], float)
+        cell_rgb = srgb_to_linear(cell_rgb / 255.0)
         for ci, cname in enumerate(CHANNELS):
             if not lit[ci]:
                 continue
@@ -363,6 +442,8 @@ def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10
     if diag_dir is not None:
         _draw_curves(screens, os.path.join(diag_dir, "curves.png"),
                      layout["max_mm"])
+        _draw_absorption(screens, samples,
+                         os.path.join(diag_dir, "absorption.png"))
     return cal
 
 
@@ -421,6 +502,71 @@ def _draw_curves(screens, path, max_mm):
     img.save(path)
 
 
+def _draw_absorption(screens, samples, path):
+    """One panel: transmittance vs thickness for the 4 backlights overlaid --
+    R/G/B channels over their matching screens (red/green/blue lines) and the
+    white screen's luminance (black line).  Data points + fitted curves."""
+    W, H = 780, 540
+    px0, py0, px1, py1 = 72, 28, W - 130, H - 58
+    img = Image.new("RGB", (W, H), (255, 255, 255))
+    d = ImageDraw.Draw(img)
+    ts = [s["thickness_mm"] for s in samples]
+    tmax = max(ts) if ts else 2.4
+
+    def X(t):
+        return px0 + (px1 - px0) * (t / tmax)
+
+    def Y(v):
+        return py1 - (py1 - py0) * float(np.clip(v, 0, 1))
+
+    d.rectangle([px0, py0, px1, py1], outline=(170, 170, 180))
+    for v in (0, 0.25, 0.5, 0.75, 1.0):
+        d.line([px0, Y(v), px1, Y(v)], fill=(236, 236, 240))
+        d.text((px0 - 34, Y(v) - 6), "%.2f" % v, fill=(120, 120, 130))
+    for i in range(int(tmax / 0.5) + 1):
+        t = i * 0.5
+        d.line([X(t), py0, X(t), py1], fill=(236, 236, 240))
+        d.text((X(t) - 8, py1 + 6), "%.1f" % t, fill=(120, 120, 130))
+    d.text(((px0 + px1) // 2 - 42, py1 + 30), "thickness (mm)", fill=(60, 60, 70))
+    d.text((8, py0 - 2), "transmittance", fill=(60, 60, 70))
+
+    series = [("red R", "red", "R", (210, 40, 40)),
+              ("green G", "green", "G", (30, 160, 60)),
+              ("blue B", "blue", "B", (50, 80, 230)),
+              ("white lum", "white", None, (0, 0, 0))]
+    ly = py0 + 6
+    for label, screen, ch, col in series:
+        if ch is not None:
+            pts = sorted((s["thickness_mm"], s["transmittance"]) for s in samples
+                         if s["screen"] == screen and s["channel"] == ch)
+            fit = screens.get(screen, {}).get("per_channel", {}).get(ch)
+        else:                                            # white -> luminance
+            wm = {}
+            for s in samples:
+                if s["screen"] == "white":
+                    wm.setdefault(s["thickness_mm"], {})[s["channel"]] = \
+                        s["transmittance"]
+            pts = sorted((t, 0.2126 * v.get("R", 0) + 0.7152 * v.get("G", 0)
+                          + 0.0722 * v.get("B", 0))
+                         for t, v in wm.items() if len(v) == 3)
+            fit = None
+        if not pts:
+            continue
+        if fit:                                          # smooth fitted curve
+            xs = np.linspace(0, tmax, 60)
+            ys = np.exp(fit["b"] - fit["a"] * xs)
+            d.line([(X(t), Y(v)) for t, v in zip(xs, ys)], fill=col, width=2)
+        else:
+            d.line([(X(t), Y(v)) for t, v in pts], fill=col, width=2)
+        for t, v in pts:
+            d.ellipse([X(t) - 2, Y(v) - 2, X(t) + 2, Y(v) + 2], fill=col)
+        d.line([px1 + 14, ly + 5, px1 + 34, ly + 5], fill=col, width=3)
+        suffix = "" if fit is None else "  a=%.2f" % fit["a"]
+        d.text((px1 + 40, ly), label + suffix, fill=(50, 50, 60))
+        ly += 20
+    img.save(path)
+
+
 # --------------------------------------------------------------------------- #
 # Synthetic photo renderer (ground truth for the self-test)
 # --------------------------------------------------------------------------- #
@@ -456,13 +602,15 @@ def synth_photo(layout, model, screen, size=(760, 1500), tilt=0.05, seed=0,
     pad_corners = np.array(layout["pad_corners"], float)
     Hmm = homography(pad_corners, quad)
 
-    base = np.array(SCREEN_RGB[screen], float)
-    # supersample for clean edges
-    ss = 2
+    # screen LINEAR emission (SCREEN_RGB are the sRGB pixels a camera records of
+    # the bare screen); we render in linear light and sRGB-encode like a camera,
+    # so the analyser's linearisation recovers the ground-truth absorption.
+    L = srgb_to_linear(np.array(SCREEN_RGB[screen], float) / 255.0)
+    ss = 2                                          # supersample for clean edges
     Wi, Hi = W * ss, H * ss
     grad_y = np.linspace(1.0, 1.0 - gradient, Hi)[:, None]     # top brighter
-    canvas = np.ones((Hi, Wi, 3), float) * base[None, None, :]
-    canvas *= grad_y[..., None]
+    canvas_lin = np.ones((Hi, Wi, 3)) * L[None, None, :] * grad_y[..., None]
+    canvas = linear_to_srgb(canvas_lin) * 255.0
     img = Image.fromarray(np.clip(canvas, 0, 255).astype(np.uint8))
     d = ImageDraw.Draw(img)
 
@@ -473,14 +621,11 @@ def synth_photo(layout, model, screen, size=(760, 1500), tilt=0.05, seed=0,
 
     for cell in layout["cells"]:                    # transmittance-tinted cells
         t = cell["thickness_mm"]
-        col = []
-        for ci, cname in enumerate(CHANNELS):
-            m = model[cname]
-            col.append(base[ci] * np.exp(m["b"] - m["a"] * t))
-        # apply local gradient at the cell centre
+        T = np.array([np.exp(model[c]["b"] - model[c]["a"] * t) for c in CHANNELS])
         cy_px = project(Hmm, [(cell["cx"], cell["cy"])])[0][1]
-        g = 1.0 - gradient * (cy_px / H)
-        col = tuple(int(np.clip(v * g, 0, 255)) for v in col)
+        g = 1.0 - gradient * (cy_px / H)            # local gradient at the cell
+        col = tuple(int(v) for v in
+                    np.clip(linear_to_srgb(L * g * T) * 255.0, 0, 255))
         d.polygon(poly(cell["cx"], cell["cy"], cell["w"], cell["h"]), fill=col)
 
     reg = layout["register_markers"]["corners"]     # opaque black markers + dot
@@ -570,6 +715,46 @@ def _load_photo(path):
     return np.asarray(Image.open(path).convert("RGB"))
 
 
+def run_measure(opts):
+    with open(opts.layout) as f:
+        layout = json.load(f)
+    photos = {s: _load_photo(getattr(opts, s))
+              for s in ("white", "red", "green", "blue") if getattr(opts, s)}
+    if not photos:
+        raise SystemExit("error: pass at least --white (and optionally r/g/b)")
+    cals = None
+    if opts.cal or opts.cal_dir:
+        from solve_recipe import load_filament
+        cals = {}
+        for spec in opts.cal or []:
+            name, path = spec.split("=", 1)
+            cals[name] = load_filament(name, path)
+        if opts.cal_dir:
+            import glob
+            for path in sorted(glob.glob(os.path.join(opts.cal_dir, "*",
+                                                       "calibration.json"))):
+                nm = os.path.basename(os.path.dirname(path))
+                cals[nm] = load_filament(nm, path)
+    rows = measure(layout, photos, cals=cals)
+    os.makedirs(opts.out_dir, exist_ok=True)
+    with open(os.path.join(opts.out_dir, "measured.json"), "w") as f:
+        json.dump(rows, f, indent=2)
+
+    has_pred = any("predicted_hex" in r for r in rows)
+    hdr = "%-22s %-9s" % ("cell (mm)", "measured")
+    hdr += " %-9s %6s" % ("predict", "dE") if has_pred else ""
+    print("\n" + hdr + "\n" + "-" * len(hdr))
+    for r in rows:
+        lab = "+".join("%s%.2f" % (k[:1], v) for k, v in r["composition_mm"].items()) \
+            or "cell %d" % r["index"]
+        line = "%-22s #%-8s" % (lab, r.get("measured_hex", "?"))
+        if "predicted_hex" in r:
+            line += " #%-8s %6.2f" % (r["predicted_hex"], r["delta_e"])
+        print(line)
+    sys.stderr.write("\nwrote %s\n" % os.path.join(opts.out_dir, "measured.json"))
+    return 0
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(
         description=__doc__,
@@ -601,10 +786,23 @@ def main(argv=None):
     sy.add_argument("--screen", choices=list(SCREEN_RGB), default="white")
     sy.add_argument("--out", required=True)
 
+    me = sub.add_parser("measure",
+                        help="measure each cell's colour (e.g. a stack pad) and, "
+                             "with --cal, compare to the stacking prediction")
+    me.add_argument("--layout", required=True)
+    me.add_argument("--white"), me.add_argument("--red")
+    me.add_argument("--green"), me.add_argument("--blue")
+    me.add_argument("--cal", action="append",
+                    help="name=calibration.json to predict + compare (repeatable)")
+    me.add_argument("--cal-dir", help="folder of <name>/calibration.json")
+    me.add_argument("--out-dir", default="filament/measured")
+
     opts = p.parse_args(argv)
 
     if opts.cmd == "selftest":
         return run_selftest(opts.out_dir, tol=opts.tol)
+    if opts.cmd == "measure":
+        return run_measure(opts)
 
     if opts.cmd == "synth":
         with open(opts.layout) as f:
