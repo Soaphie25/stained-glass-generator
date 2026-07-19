@@ -236,3 +236,6 @@ filament/cal_out/
 filament/recipes/
 # Bambu color-mix 3MF exports used as templates (contain personal printer profile)
 test_*mix.3mf
+
+# real calibration photos (large; user data)
+photo/

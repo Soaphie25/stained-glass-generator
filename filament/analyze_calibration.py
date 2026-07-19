@@ -43,7 +43,7 @@ import sys
 from collections import deque
 
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 
 CHANNELS = ("R", "G", "B")
@@ -265,8 +265,17 @@ def fit_absorption(thick, trans):
 # --------------------------------------------------------------------------- #
 # Core analysis of one filament (multiple screen photos)
 # --------------------------------------------------------------------------- #
+def _prep(rgb, max_dim, blur_frac, H_probe=None):
+    """Downscale a big phone photo (speed + mild anti-alias) and return it."""
+    im = Image.fromarray(rgb)
+    if max(im.size) > max_dim:
+        s = max_dim / max(im.size)
+        im = im.resize((round(im.width * s), round(im.height * s)), Image.LANCZOS)
+    return np.asarray(im)
+
+
 def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10,
-            diag_dir=None):
+            max_dim=1600, blur_frac=0.03, diag_dir=None):
     """photos: dict screen_colour -> HxWx3 uint8 array.  Returns calibration dict."""
     cells = layout["cells"]
     thick = np.array([c["thickness_mm"] for c in cells], float)
@@ -277,12 +286,23 @@ def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10
 
     screens = {}
     samples = []
-    for screen, rgb in photos.items():
+    for screen, rgb0 in photos.items():
+        rgb = _prep(rgb0, max_dim, blur_frac)
         corners, dot = detect_markers(rgb, dark_frac=dark_frac)
         H = order_and_fit(corners, dot, layout)
 
+        # blur to smooth print texture (layer lines) before SAMPLING, with a
+        # radius tied to the projected cell size so it averages several layer
+        # lines but never bleeds across a cell edge.  Detection stays on `rgb`.
+        c0 = cells[0]
+        cpx = float(np.hypot(*(project(H, [(c0["cx"] + c0["w"] / 2, c0["cy"])])[0]
+                               - project(H, [(c0["cx"] - c0["w"] / 2, c0["cy"])])[0])))
+        rad = max(1.0, cpx * blur_frac)
+        smooth = np.asarray(Image.fromarray(rgb).filter(
+            ImageFilter.GaussianBlur(rad)))
+
         # bare-screen reference windows -> brightness plane per channel
-        win_rgb = np.array([sample_patch(rgb, H, w["cx"], w["cy"],
+        win_rgb = np.array([sample_patch(smooth, H, w["cx"], w["cy"],
                                          2 * w["r"], 2 * w["r"], frac=0.9)
                             for w in win], float)
         good = np.isfinite(win_rgb).all(axis=1)
@@ -295,7 +315,7 @@ def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10
         lit = eval_plane(planes, win_xy[good]).mean(axis=0) > floor
 
         per_channel = {}
-        cell_rgb = np.array([sample_patch(rgb, H, c["cx"], c["cy"],
+        cell_rgb = np.array([sample_patch(smooth, H, c["cx"], c["cy"],
                                           c["w"], c["h"]) for c in cells], float)
         for ci, cname in enumerate(CHANNELS):
             if not lit[ci]:
@@ -569,6 +589,12 @@ def main(argv=None):
     an.add_argument("--dark-frac", type=float, default=0.10,
                     help="marker darkness threshold as frac of screen brightness")
     an.add_argument("--ref-floor-frac", type=float, default=0.18)
+    an.add_argument("--max-dim", type=int, default=1600,
+                    help="downscale photos to this max dimension (speed + "
+                         "anti-alias; default 1600)")
+    an.add_argument("--blur", type=float, default=0.03,
+                    help="sampling blur as a fraction of cell size, to smooth "
+                         "print layer-line texture (default 0.03; 0 disables)")
 
     sy = sub.add_parser("synth", help="render one synthetic pad photo")
     sy.add_argument("--layout", required=True)
@@ -601,6 +627,7 @@ def main(argv=None):
     os.makedirs(opts.out_dir, exist_ok=True)
     cal = analyze(layout, photos, name=opts.name,
                   ref_floor_frac=opts.ref_floor_frac, dark_frac=opts.dark_frac,
+                  max_dim=opts.max_dim, blur_frac=opts.blur,
                   diag_dir=opts.out_dir)
     out = os.path.join(opts.out_dir, "calibration.json")
     with open(out, "w") as f:
