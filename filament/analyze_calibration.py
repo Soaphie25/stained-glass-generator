@@ -435,6 +435,50 @@ def measure(layout, photos, cals=None, max_dim=1600, blur_frac=0.03):
     return out
 
 
+CAPTURE_TIPS = (
+    "Capture tips for a clean calibration:\n"
+    "  * RAW (DNG/ARW/...) is PREFERRED -- it's linear and skips the phone's tone\n"
+    "    curve, so the absorption numbers are trustworthy (JPEG can inflate them).\n"
+    "  * Shoot in a DARK room to kill reflections off the pad's top surface, but\n"
+    "    set the SCREEN to MAX, FIXED brightness -- turn OFF auto/adaptive\n"
+    "    brightness, True Tone and Night Shift (a dim adaptive screen ruins SNR).\n"
+    "  * Keep ISO LOW and lock the camera's exposure + white balance so all four\n"
+    "    shots share one exposure; avoid clipping the bare screen to pure white.\n"
+    "  * Reference starting point (manual/pro mode): ISO 100, then set the shutter\n"
+    "    so the BARE SCREEN reads ~85-95%% (bright but NOT clipped) -- if the cells\n"
+    "    look too dark, LENGTHEN the shutter rather than raising ISO. Lock ISO +\n"
+    "    shutter + WB and use the same for all four screen colours.\n"
+    "  * Fill the frame with the pad, keep it flat and roughly square-on."
+)
+
+
+def _quality_warnings(screens):
+    """Flag suspicious shots with actionable re-shoot tips."""
+    out = []
+    for s, d in screens.items():
+        mr, clip = d.get("max_ref", 1.0), d.get("clip_frac", 0.0)
+        if mr < 0.25:
+            out.append("[%s] UNDER-EXPOSED: brightest reference is only %.0f%% of "
+                       "full -- screen too dim (adaptive brightness?) or exposure "
+                       "too low. Max the screen brightness / raise exposure."
+                       % (s, mr * 100))
+        if clip > 0.12:
+            out.append("[%s] OVER-EXPOSED: %.0f%% of the bare screen is clipped to "
+                       "white -- the reference is saturated. Lower exposure or "
+                       "screen brightness so the windows aren't maxed out."
+                       % (s, clip * 100))
+        for ch, f in d.get("per_channel", {}).items():
+            # only flag channels that ABSORB meaningfully but fit poorly (a
+            # near-zero channel, e.g. red through a red filament, is low-r2 by
+            # nature -- nothing to fit -- and must not be flagged as noisy).
+            if abs(f.get("a", 0.0)) > 0.25 and f.get("r2", 1.0) < 0.5:
+                out.append("[%s/%s] NOISY fit (r2=%.2f) despite strong absorption "
+                           "-- likely high ISO / motion blur / reflections. Dark "
+                           "room, low ISO, lock focus & exposure, hold steady."
+                           % (s, ch, f["r2"]))
+    return out
+
+
 def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10,
             max_dim=1600, blur_frac=0.03, diag_dir=None):
     """photos: dict screen_colour -> HxWx3 uint8 array.  Returns calibration dict."""
@@ -475,6 +519,8 @@ def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10
         max_ref = float(np.nanmax(win_rgb))
         floor = ref_floor_frac * max_ref
         lit = eval_plane(planes, win_xy[good]).mean(axis=0) > floor
+        clip_frac = (float((win_rgb[good][:, lit] > 0.97).mean())
+                     if good.any() and lit.any() else 0.0)
 
         per_channel = {}
         cell_rgb = np.array([sample_patch(smooth, H, c["cx"], c["cy"],
@@ -488,6 +534,7 @@ def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10
                          np.nan)
             fit = fit_absorption(thick, T)
             if fit:
+                fit["range"] = round(float(np.nanmax(T) - np.nanmin(T)), 3)
                 per_channel[cname] = fit
             for k in range(len(cells)):
                 if np.isfinite(T[k]):
@@ -498,7 +545,8 @@ def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10
             "per_channel": per_channel,
             "markers_px": [{"cx": round(c["cx"], 1), "cy": round(c["cy"], 1)}
                            for c in corners],
-            "max_ref": round(max_ref, 1),
+            "max_ref": round(max_ref, 3),
+            "clip_frac": round(clip_frac, 3),
         }
         if diag_dir is not None:
             _draw_diag(rgb, H, cells, win, corners, None,
@@ -522,6 +570,7 @@ def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10
         "primary_absorption_per_mm": primary,
         "screens": screens,
         "samples": samples,
+        "warnings": _quality_warnings(screens),
     }
     if diag_dir is not None:
         _draw_curves(screens, os.path.join(diag_dir, "curves.png"),
@@ -945,6 +994,13 @@ def main(argv=None):
     sys.stderr.write("filament '%s': primary absorption per mm = %s\n"
                      % (opts.name, cal["primary_absorption_per_mm"]))
     sys.stderr.write("wrote %s (+ detect_*.png, curves.png)\n" % out)
+    if cal["warnings"]:
+        sys.stderr.write("\n!! SHOT QUALITY WARNINGS -- results may be unreliable:\n")
+        for wmsg in cal["warnings"]:
+            sys.stderr.write("  - %s\n" % wmsg)
+        sys.stderr.write("\n" + CAPTURE_TIPS + "\n")
+    else:
+        sys.stderr.write("shot quality looks OK (exposure + fits within range).\n")
     return 0
 
 

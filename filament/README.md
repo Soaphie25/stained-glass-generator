@@ -46,7 +46,15 @@ Display the bundled standard primaries `filament/screens/{white,red,green,blue}.
 with `python3 filament/make_screens.py --width W --height H`).
 
 Practical must-dos: turn OFF True Tone / Night Shift / auto-brightness, lock camera
-exposure & white balance (or shoot RAW), avoid glare. The bare screen showing
+exposure & white balance (or shoot RAW), avoid glare.
+
+**Shoot RAW (DNG/ARW/CR2/…) if you can** — it's linear and skips the phone's tone
+curve, which otherwise inflates the absorption ~40–60%. rawpy decodes it
+automatically (`pip install rawpy`). Reference exposure: ISO 100, dark room, screen
+at max **fixed** brightness, shutter set so the bare screen reads ~85–95% (bright
+but not clipped); if cells look too dark, lengthen the shutter rather than raising
+ISO, and lock ISO/shutter/WB across all four shots. `analyze` prints **shot-quality
+warnings** (under/over-exposure, noisy fits) with re-shoot tips if something's off. The bare screen showing
 through the gaps between cells is used to normalise out exposure/brightness.
 
 ### 3. Analyse the photos — `analyze_calibration.py`
