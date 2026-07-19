@@ -11,11 +11,13 @@ Modes (``--mode``):
   * ``full-layer`` (default) -- each filament contributes a block of whole layers;
     a pane is one filament, or a stack of a few, each at its own thickness.  This
     is the finished, print-once-per-filament model below.
-  * ``sub-layer``  -- EXPERIMENTAL, uses Bambu Studio "Color Mixing": 2-3 same
-    material filaments are interleaved as thin alternating sub-layers at a chosen
-    RATIO over a total thickness.  In backlit transmission this matches full-layer
-    stacking in pure absorption, but the extra internal interfaces add scatter, so
-    it needs its OWN mixture calibration.  (Awaiting spec -- not yet implemented.)
+  * ``sub-layer``  -- Bambu Studio "Color Mixing": 2-3 same-material filaments
+    interleaved as thin alternating sub-layers at a chosen RATIO over a total
+    thickness.  On real prints the mix deviates from pure volume-weighted
+    absorption by dE ~15-20 mid-ramp (interleaved layers transmit MORE than the
+    average), so it needs its OWN mixture calibration -- pass ``--mixcal`` with the
+    per-filament sigma from ``mixture.py fit``.  With sigma it predicts to the
+    print-repeatability floor (dE ~4).  Recipe = filament pair + ratio + thickness.
 
 Model (per channel c), a stack of filaments i at thicknesses t_i, lit from behind
 by white:
@@ -231,6 +233,146 @@ def solve_target(target_hex, pool, max_filaments=3, tmin=0.2, tmax=4.0,
 
 
 # --------------------------------------------------------------------------- #
+# Sub-layer mixing (Bambu Studio Color Mixing): 2-3 filaments interleaved as
+# thin alternating sublayers at a ratio.  Built on the full-layer calibration
+# (absorption a, surface T0) PLUS a per-filament mixture term sigma fitted by
+# mixture.py from printed ramps.  Predicted transmittance = mix_tau_multi.
+# --------------------------------------------------------------------------- #
+def load_sigma(paths):
+    """Merge per-filament sigma from one or more mixture_calibration.json files.
+
+    Returns (sigma{name:[3]}, measured_pairs{key:{...}}).  Later files override
+    earlier ones for the same filament; each pair's measured ramp is kept for the
+    posterior override (a directly-measured pair beats the generalized sigma)."""
+    sigma, pairs = {}, {}
+    for path in paths or []:
+        with open(path) as f:
+            mc = json.load(f)
+        for n, s in mc.get("sigma", {}).items():
+            sigma[n] = np.asarray(s, float)
+        fils = mc.get("filaments")
+        if fils and mc.get("measured_tau"):
+            pairs["+".join(sorted(fils))] = {
+                "A": fils[0], "B": fils[1], "ratios": mc["ratios"],
+                "tau": mc["measured_tau"], "T": mc.get("thickness_mm", 1.0)}
+    return sigma, pairs
+
+
+def predict_mix_linear(fils, sigs, fracs, thickness):
+    """Backlit-white linear RGB of a sub-layer mix (fracs sum to 1)."""
+    from mixture import mix_tau_multi          # lazy: mixture imports us
+    fr = np.asarray(fracs, float)
+    fr = fr / fr.sum()
+    return mix_tau_multi(fils, [np.asarray(s, float) for s in sigs], fr, thickness)
+
+
+def solve_target_sublayer(target_hex, pool, sigma, ratio_step=0.05,
+                          tmin=0.4, tmax=3.0, layer=0.2, max_filaments=2,
+                          tol_de=1.5):
+    """Best sub-layer recipe for one target: a single filament, or 2-3 filaments
+    interleaved at a ratio, over a total thickness.  Returns a recipe dict."""
+    target_lin = hex_to_linear(target_hex)
+    thicks = np.round(np.arange(tmin, tmax + 1e-9, layer), 3)
+    ratios = np.round(np.arange(ratio_step, 1.0 - 1e-9, ratio_step), 3)
+    cands = []
+
+    def add(lin, rec):
+        rec["delta_e"] = round(delta_e(target_lin, lin), 3)
+        rec["predicted_hex"] = linear_to_hex(lin)
+        cands.append(rec)
+
+    for m in pool:                                       # single (pure) pane
+        for T in thicks:
+            add(predict_linear([m], [T]),
+                {"n": 1, "filaments": [m.name], "fracs_pct": [100],
+                 "thickness_mm": float(T), "has_sigma": True})
+
+    combos = []
+    if max_filaments >= 2:
+        combos += [c for c in itertools.combinations(range(len(pool)), 2)]
+    for a, b in combos:                                  # 2-filament mix
+        A, B = pool[a], pool[b]
+        sA = sigma.get(A.name, np.zeros(3))
+        sB = sigma.get(B.name, np.zeros(3))
+        have = A.name in sigma and B.name in sigma
+        for p in ratios:
+            for T in thicks:
+                add(predict_mix_linear([A, B], [sA, sB], [1 - p, p], T),
+                    {"n": 2, "filaments": [A.name, B.name],
+                     "fracs_pct": [round((1 - p) * 100), round(p * 100)],
+                     "thickness_mm": float(T), "has_sigma": have})
+
+    if max_filaments >= 3:                               # 3-filament mix (coarse)
+        r3 = np.round(np.arange(0.2, 0.81, 0.2), 3)
+        for a, b, c in itertools.combinations(range(len(pool)), 3):
+            mods = [pool[a], pool[b], pool[c]]
+            sgs = [sigma.get(m.name, np.zeros(3)) for m in mods]
+            have = all(m.name in sigma for m in mods)
+            for fa in r3:
+                for fb in r3:
+                    fc = round(1 - fa - fb, 3)
+                    if fc < 0.19:
+                        continue
+                    for T in thicks:
+                        add(predict_mix_linear(mods, sgs, [fa, fb, fc], T),
+                            {"n": 3, "filaments": [m.name for m in mods],
+                             "fracs_pct": [round(fa * 100), round(fb * 100),
+                                           round(fc * 100)],
+                             "thickness_mm": float(T), "has_sigma": have})
+
+    if not cands:
+        return {"target_hex": target_hex.lower(), "delta_e": None}
+    cands.sort(key=lambda c: c["delta_e"])
+    best_de = cands[0]["delta_e"]
+    near = [c for c in cands if c["delta_e"] <= best_de + tol_de]
+    chosen = min(near, key=lambda c: (c["n"], c["delta_e"]))    # prefer simpler
+    single = min((c for c in cands if c["n"] == 1),
+                 key=lambda c: c["delta_e"], default=None)
+    return {"target_hex": target_hex.lower(), "recommended": chosen,
+            "best_match": cands[0], "best_single": single}
+
+
+def _fmt_mix(rec):
+    return " / ".join("%s %d%%" % (n, f)
+                      for n, f in zip(rec["filaments"], rec["fracs_pct"]))
+
+
+def print_table_sublayer(recipes):
+    print("\n%-9s %-9s %5s  recipe (sub-layer mix, total mm)" %
+          ("target", "predict", "dE"))
+    print("-" * 66)
+    for r in recipes:
+        rec = r.get("recommended")
+        if not rec:
+            print("#%-8s  (no recipe)" % r["target_hex"])
+            continue
+        warn = "" if rec.get("has_sigma", True) else "  [!no-sigma: baseline]"
+        print("#%-8s #%-8s %5.1f  %s @ %.1fmm%s"
+              % (r["target_hex"], rec["predicted_hex"], rec["delta_e"],
+                 _fmt_mix(rec), rec["thickness_mm"], warn))
+
+
+def write_swatches_sublayer(recipes, path, sw=120, hh=64):
+    rows = [r for r in recipes if r.get("recommended")]
+    if not rows:
+        return
+    img = Image.new("RGB", (sw * 2 + 320, hh * len(rows) + 2), (250, 250, 252))
+    d = ImageDraw.Draw(img)
+    for i, r in enumerate(rows):
+        y = i * hh + 1
+        rec = r["recommended"]
+        for j, hx in enumerate((r["target_hex"], rec["predicted_hex"])):
+            rgb = tuple(int(hx[k:k + 2], 16) for k in (0, 2, 4))
+            d.rectangle([j * sw + 1, y, j * sw + sw, y + hh - 2], fill=rgb)
+        d.text((2 * sw + 8, y + 4), "target #%s" % r["target_hex"], fill=(40, 40, 40))
+        d.text((2 * sw + 8, y + 22), "-> #%s  dE=%.1f" %
+               (rec["predicted_hex"], rec["delta_e"]), fill=(40, 40, 40))
+        d.text((2 * sw + 8, y + 40), "%s @ %.1fmm" % (_fmt_mix(rec),
+               rec["thickness_mm"]), fill=(90, 90, 110))
+    img.save(path)
+
+
+# --------------------------------------------------------------------------- #
 # Palette input + reporting
 # --------------------------------------------------------------------------- #
 _HEX = re.compile(r"([0-9a-fA-F]{6})")
@@ -384,9 +526,17 @@ def run_predict(opts):
     if not pool:
         raise SystemExit("error: no calibrations (use --cal or --cal-dir)")
     byname = {m.name: m for m in pool}
+    if not opts.stack and not opts.mix:
+        raise SystemExit("error: pass --stack (full-layer) or --mix (sub-layer)")
+    sigma = {}
+    if opts.mix:
+        sigma, _ = load_sigma(opts.mixcal)
+        if not sigma:
+            sys.stderr.write("warning: --mix with no --mixcal -> sigma=0 "
+                             "(baseline; off by dE ~15 mid-ramp)\n")
     rows = []
-    print("\n%-30s %-9s  Lab" % ("stack (mm, top->bottom)", "predict"))
-    print("-" * 56)
+    print("\n%-34s %-9s  Lab" % ("recipe", "predict"))
+    print("-" * 60)
     for spec in opts.stack:
         stack = parse_stack(spec)
         miss = [n for n in stack if n not in byname]
@@ -394,10 +544,26 @@ def run_predict(opts):
             raise SystemExit("error: no calibration for %s (have %s)"
                              % (miss, list(byname)))
         lin, hx, lab = predict_stack(byname, stack)
-        label = " + ".join("%s %.2f" % (n, t) for n, t in stack.items())
+        label = "stack: " + " + ".join("%s %.2f" % (n, t) for n, t in stack.items())
         rows.append({"label": label, "stack": stack, "predicted_hex": hx,
                      "lab": [round(x, 1) for x in lab]})
-        print("%-30s #%-8s  L*%.0f a*%.0f b*%.0f" % (label, hx, *lab))
+        print("%-34s #%-8s  L*%.0f a*%.0f b*%.0f" % (label, hx, *lab))
+    for spec in opts.mix:
+        mix = parse_stack(spec)                     # name=fraction
+        miss = [n for n in mix if n not in byname]
+        if miss:
+            raise SystemExit("error: no calibration for %s (have %s)"
+                             % (miss, list(byname)))
+        fils = [byname[n] for n in mix]
+        sigs = [sigma.get(n, np.zeros(3)) for n in mix]
+        lin = predict_mix_linear(fils, sigs, list(mix.values()), opts.thickness)
+        hx, lab = linear_to_hex(lin), linear_to_lab(lin)
+        tot = sum(mix.values())
+        label = "mix: " + " / ".join("%s %d%%" % (n, round(f / tot * 100))
+                                     for n, f in mix.items()) + " @%.1fmm" % opts.thickness
+        rows.append({"label": label, "mix": mix, "thickness_mm": opts.thickness,
+                     "predicted_hex": hx, "lab": [round(x, 1) for x in lab]})
+        print("%-34s #%-8s  L*%.0f a*%.0f b*%.0f" % (label, hx, *lab))
     os.makedirs(opts.out_dir, exist_ok=True)
     with open(os.path.join(opts.out_dir, "predictions.json"), "w") as f:
         json.dump({"filaments": [m.name for m in pool], "stacks": rows}, f, indent=2)
@@ -427,6 +593,9 @@ def main(argv=None):
     sv.add_argument("--targets", help="comma-separated target hex codes")
     sv.add_argument("--from-svg-dir",
                     help="read targets from color_NN_<hex> filenames in a folder")
+    sv.add_argument("--mixcal", action="append",
+                    help="[sub-layer] mixture_calibration.json with per-filament "
+                         "sigma (repeatable; merges pairs for generalization)")
     sv.add_argument("--max-filaments", type=int, default=3)
     sv.add_argument("--min-mm", type=float, default=0.2)
     sv.add_argument("--max-mm", type=float, default=4.0)
@@ -440,8 +609,15 @@ def main(argv=None):
     pr.add_argument("--cal", action="append",
                     help="filament calibration: name=path/to/calibration.json")
     pr.add_argument("--cal-dir", help="folder of <name>/calibration.json")
-    pr.add_argument("--stack", action="append", required=True,
-                    help="a stack, e.g. red=0.2,green=0.8 (mm); repeatable")
+    pr.add_argument("--stack", action="append", default=[],
+                    help="full-layer stack, e.g. red=0.2,green=0.8 (mm); repeatable")
+    pr.add_argument("--mix", action="append", default=[],
+                    help="sub-layer mix, e.g. red=0.4,green=0.6 (fractions) "
+                         "@thickness in --thickness; repeatable")
+    pr.add_argument("--thickness", type=float, default=1.0,
+                    help="[--mix] total thickness mm for sub-layer mixes")
+    pr.add_argument("--mixcal", action="append",
+                    help="[--mix] mixture_calibration.json (per-filament sigma)")
     pr.add_argument("--out-dir", default="filament/predictions")
 
     st = sub.add_parser("selftest", help="synthetic recover-the-recipe check")
@@ -452,11 +628,6 @@ def main(argv=None):
         return run_selftest(opts.out_dir)
     if opts.cmd == "predict":
         return run_predict(opts)
-
-    if opts.mode == "sub-layer":
-        raise SystemExit(
-            "sub-layer mixture mode (Bambu Studio Color Mixing) is not yet "
-            "implemented -- awaiting spec.  Use --mode full-layer for now.")
 
     pool = _load_pool(opts)
     if not pool:
@@ -469,11 +640,38 @@ def main(argv=None):
         targets += targets_from_svg_dir(opts.from_svg_dir)
     if not targets:
         raise SystemExit("error: no targets (use --targets or --from-svg-dir)")
+    os.makedirs(opts.out_dir, exist_ok=True)
+
+    if opts.mode == "sub-layer":
+        sigma, mpairs = load_sigma(opts.mixcal)
+        if not sigma:
+            raise SystemExit(
+                "error: sub-layer mode needs mixture calibration -- pass "
+                "--mixcal <mixture_calibration.json> (from `mixture.py fit`). "
+                "Without sigma, mixes are off by dE ~15 mid-ramp.")
+        missing = [m.name for m in pool if m.name not in sigma]
+        if missing:
+            sys.stderr.write("warning: no sigma for %s -- mixes involving them "
+                             "fall back to baseline (unreliable)\n"
+                             % ", ".join(missing))
+        recipes = [solve_target_sublayer(
+            h, pool, sigma, tmin=opts.min_mm, tmax=opts.max_mm,
+            layer=opts.layer, max_filaments=opts.max_filaments,
+            tol_de=opts.tol_de) for h in targets]
+        with open(os.path.join(opts.out_dir, "recipes.json"), "w") as f:
+            json.dump({"mode": opts.mode, "filaments": [m.name for m in pool],
+                       "sigma_for": sorted(sigma), "recipes": recipes}, f, indent=2)
+        write_swatches_sublayer(recipes, os.path.join(opts.out_dir,
+                                                      "swatches.png"))
+        print_table_sublayer(recipes)
+        sys.stderr.write("\npool: %s | sigma: %s | %d targets -> %s\n" %
+                         (", ".join(m.name for m in pool), ", ".join(sorted(sigma)),
+                          len(targets), os.path.join(opts.out_dir, "recipes.json")))
+        return 0
 
     recipes = [solve_target(h, pool, max_filaments=opts.max_filaments,
                             tmin=opts.min_mm, tmax=opts.max_mm, layer=opts.layer,
                             tol_de=opts.tol_de) for h in targets]
-    os.makedirs(opts.out_dir, exist_ok=True)
     with open(os.path.join(opts.out_dir, "recipes.json"), "w") as f:
         json.dump({"mode": opts.mode, "filaments": [m.name for m in pool],
                    "recipes": recipes}, f, indent=2)

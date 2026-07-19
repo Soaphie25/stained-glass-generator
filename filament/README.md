@@ -136,8 +136,40 @@ printed — A–C from A–B + B–C) and **3-filament** mixes from the same pai
 σ. A pair's own measured ramp overrides the generalized prediction when they differ.
 
 ```bash
-python3 filament/mixture.py selftest   # recovers σ; predicts unseen A-C + 3-mixes
+python3 filament/mixture.py fit --layout filament/mixpad/layout.json --white mix.dng \
+    --a red=filament/cals/red/calibration.json --b green=filament/cals/green/calibration.json \
+    --out-dir filament/mixcal        # -> mixture_calibration.json (per-filament σ)
+python3 filament/mixture.py selftest # recovers σ; predicts unseen A-C + 3-mixes
 ```
+
+**Solve / predict sub-layer recipes** — the fitted σ feeds straight into
+`solve_recipe.py --mode sub-layer` (pass one `--mixcal` per calibrated pair; they
+merge, so a shared filament's σ covers unseen pairs A-C from A-B + B-C):
+
+```bash
+# forward: predict a specific mix's backlit colour
+python3 filament/solve_recipe.py predict --cal-dir filament/cals \
+    --mixcal filament/mixcal/mixture_calibration.json \
+    --mix red=0.5,green=0.5 --thickness 1.0
+
+# solve: best (filament pair + ratio + thickness) per target palette
+python3 filament/solve_recipe.py solve --mode sub-layer --cal-dir filament/cals \
+    --mixcal filament/mixcal/mixture_calibration.json \
+    --from-svg-dir sample1_fragments --layer 0.2 --out-dir filament/recipes_sub
+```
+
+Both fall back to σ=0 (pure absorption) for any filament without a mixture
+calibration and warn -- that baseline is off by dE ~15 mid-ramp, so calibrate the
+pair first.
+
+**Real-print finding.** With red+green both calibrated at the print's 0.2 mm layer
+height, a printed 11-step sub-layer ramp confirmed the model: baseline (single-
+filament absorption only) mean ΔE **11.7** (up to ~20 mid-ramp), σ-model mean ΔE
+**4.1** -- at the print-repeatability floor (the pure endpoints alone sit at ΔE ~6
+from print-to-print variation).  So single-filament calibration is **not** enough
+for sub-layer mixes; you need the pair-ramp σ, but it generalises per filament.
+Absorption is also layer-height dependent -- green's red-absorption rose +46 %
+from 0.1 to 0.2 mm -- so calibrate at the production layer height.
 
 **`bambu_mix3mf.py`** — the reusable writer that turns parts (each tagged with a
 base filament or a mix ratio) into a Bambu color-mix 3MF: de-duplicates distinct
@@ -165,8 +197,10 @@ python3 filament/mixture.py selftest
 
 - [x] Calibration-pad generator (`make_calibration_pad.py`) — one rigid base-plate part
 - [x] Photo analyser (`analyze_calibration.py`), synthetic-validated
-- [x] Mixture solver (`solve_recipe.py`): palette → per-pane recipe
+- [x] Full-layer solver (`solve_recipe.py`): palette → per-pane recipe
       (filament + thickness + predicted colour + ΔE), stacking ≤3 filaments
-- [ ] Validate on a real printed + photographed pad
-- [ ] Refine stack model with a measured 2-filament stack (cross-term / order)
+- [x] Validate on a real printed + photographed pad (red+green, 0.2 mm)
+- [x] Sub-layer mixture calibration (`mixture.py fit`) + solver
+      (`solve_recipe.py --mode sub-layer`), real-print validated (ΔE 11.7→4.1)
+- [ ] Third filament (blue) to test σ generalisation on an unseen pair (A-C)
 - [ ] Upgrade Delta-E CIE76 → CIEDE2000; integrate directly into the SVG generator
