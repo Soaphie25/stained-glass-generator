@@ -438,6 +438,8 @@ def measure(layout, photos, cals=None, max_dim=1600, blur_frac=0.03):
 
 CAPTURE_TIPS = (
     "Capture tips for a clean calibration:\n"
+    "  * A single well-exposed WHITE shot is enough -- white is the primary basis\n"
+    "    (correct for backlit-white panes); red/green/blue screens are optional.\n"
     "  * RAW (DNG/ARW/...) is PREFERRED -- it's linear and skips the phone's tone\n"
     "    curve, so the absorption numbers are trustworthy (JPEG can inflate them).\n"
     "  * Shoot in a DARK room to kill reflections off the pad's top surface, but\n"
@@ -557,17 +559,17 @@ def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10
             _draw_diag(rgb, H, cells, win, corners, None,
                        os.path.join(diag_dir, "detect_%s.png" % screen))
 
-    # headline: absorption per display primary from its matching screen -- but
-    # only if that screen was WELL EXPOSED; a dim/clipped diagonal screen gives a
-    # garbage value, so fall back to the (usually reliable) white screen.
+    # headline: per-channel absorption from the WHITE screen -- the physically
+    # correct basis for backlit-WHITE panes (white light through the filament ->
+    # camera RGB is exactly what a pane does) and the easiest to expose cleanly.
+    # A matching colour screen is a fallback only if white wasn't shot; the R/G/B
+    # screens are optional extra spectral detail, not required.
     primary = {}
-    for cname, screen in (("R", "red"), ("G", "green"), ("B", "blue")):
-        diag = screens.get(screen, {})
-        dfit = diag.get("per_channel", {}).get(cname)
+    diag_of = {"R": "red", "G": "green", "B": "blue"}
+    for cname in CHANNELS:
         wfit = screens.get("white", {}).get("per_channel", {}).get(cname)
-        good_diag = (dfit is not None and diag.get("max_ref", 0) >= 0.3
-                     and diag.get("clip_frac", 0) <= 0.12)
-        src = dfit if good_diag else (wfit or dfit)
+        dfit = screens.get(diag_of[cname], {}).get("per_channel", {}).get(cname)
+        src = wfit or dfit
         if src:
             primary[cname] = round(src["a"], 5)
 
