@@ -126,6 +126,14 @@ def _components(mask, min_area):
     return comps
 
 
+def _quad_area(p):
+    """Area of the quadrilateral through 4 points (ordered by angle)."""
+    c = p.mean(axis=0)
+    q = p[np.argsort(np.arctan2(p[:, 1] - c[1], p[:, 0] - c[0]))]
+    return 0.5 * abs(sum(q[i, 0] * q[(i + 1) % 4, 1] - q[(i + 1) % 4, 0] * q[i, 1]
+                         for i in range(4)))
+
+
 def detect_markers(rgb, dark_frac=0.10):
     """Find the 4 corner markers + orientation dot in an HxWx3 uint8 image.
 
@@ -136,32 +144,34 @@ def detect_markers(rgb, dark_frac=0.10):
     always interior to them.  Returns (corners, dot).
     """
     v = rgb.max(axis=2).astype(np.float32)
-    thr = max(18.0, dark_frac * float(np.percentile(v, 95)))
-    mask = v < thr
-
+    p95 = float(np.percentile(v, 95))
     h, w = v.shape
-    comps = _components(mask, min_area=max(9, int(0.00002 * h * w)))
-    # keep square-ish blobs (markers are squares; the dot is a small square)
-    square = [c for c in comps if 0.55 <= c["w"] / max(c["h"], 1) <= 1.8]
+    min_area = max(9, int(0.00002 * h * w))
+    # escalate the darkness threshold until >=4 square blobs appear: matte-black
+    # markers read ~0 in a contrasty JPEG but ~30/255 in a linear RAW (lifted
+    # blacks).  Extra dark cells that get caught are rejected below.
+    square = []
+    for frac in (dark_frac, 0.18, 0.28, 0.40, 0.55):
+        comps = _components(v < max(8.0, frac * p95), min_area)
+        square = [c for c in comps if 0.55 <= c["w"] / max(c["h"], 1) <= 1.8]
+        if len(square) >= 4:
+            break
     if len(square) < 4:
         raise SystemExit("error: found only %d marker-like blobs (need 4). "
-                         "Try adjusting --dark-frac or check the photo." %
-                         len(square))
+                         "Try --dark-frac or check the photo." % len(square))
+    # the 4 corner markers ENCLOSE the largest quadrilateral (cells are interior);
+    # robust to perspective + stray dark cells, unlike axis-aligned extremes.
     pts = np.array([[c["cx"], c["cy"]] for c in square], float)
-    s, diff = pts[:, 0] + pts[:, 1], pts[:, 0] - pts[:, 1]
-    # the 4 outermost blobs: extremes of x+y and x-y (image corners)
-    idx = []
-    for k in (int(np.argmin(s)), int(np.argmax(s)),
-              int(np.argmin(diff)), int(np.argmax(diff))):
-        if k not in idx:
-            idx.append(k)
-    if len(idx) < 4:                                # degenerate: top up by
-        centroid = pts.mean(axis=0)                 # distance from centroid
-        for k in np.argsort(-((pts - centroid) ** 2).sum(axis=1)):
-            if int(k) not in idx:
-                idx.append(int(k))
-            if len(idx) == 4:
-                break
+    cand = list(range(len(square)))
+    if len(cand) > 14:                              # keep the most outer candidates
+        d = ((pts - pts.mean(axis=0)) ** 2).sum(axis=1)
+        cand = list(np.argsort(-d)[:14])
+    best = None
+    for combo in itertools.combinations(cand, 4):
+        a = _quad_area(pts[list(combo)])
+        if best is None or a > best[0]:
+            best = (a, combo)
+    idx = list(best[1])
     corners = [square[i] for i in idx]
     rest = [square[i] for i in range(len(square)) if i not in idx]
     # the dot is a SMALL blob (<< marker) sitting next to one corner
@@ -281,6 +291,82 @@ def fit_absorption(thick, trans):
 # --------------------------------------------------------------------------- #
 # Core analysis of one filament (multiple screen photos)
 # --------------------------------------------------------------------------- #
+def _locate(rgb, layout, dark_frac=0.10):
+    """Find the pad; return (homography mm->px, chosen 4 corner blobs).
+
+    Robust to a SMALL pad on a BIG screen (the iPad bezel is dark too), dark
+    cells, perspective and lifted-black RAW.  Rather than trusting the outermost
+    dark blobs, it enumerates candidate 4-marker sets and keeps the homography
+    that best EXPLAINS the image: reference windows must land on the bright bare
+    screen, cells must be dimmer, and the orientation dot must land on a real
+    dark blob.
+    """
+    v = rgb.max(axis=2).astype(np.float32)
+    h, w = v.shape
+    p95 = float(np.percentile(v, 95))
+    min_area = max(9, int(1.2e-5 * h * w))
+    seen = {}                                        # union of square blobs
+    for frac in (dark_frac, 0.2, 0.32, 0.48):
+        for c in _components(v < max(8.0, frac * p95), min_area):
+            if 0.5 <= c["w"] / max(c["h"], 1) <= 2.0:
+                k = (round(c["cx"] / 10), round(c["cy"] / 10))
+                if k not in seen or c["area"] > seen[k]["area"]:
+                    seen[k] = c
+    square = list(seen.values())
+    if len(square) < 4:
+        raise SystemExit("error: found only %d marker-like blobs (need 4)."
+                         % len(square))
+    pts = np.array([[c["cx"], c["cy"]] for c in square], float)
+    reg = layout["register_markers"]["corners"]
+    mm = np.array([[reg[n]["cx"], reg[n]["cy"]] for n in
+                   ("top_left", "top_right", "bottom_right", "bottom_left")], float)
+    dot_mm = [reg["orientation_dot"]["cx"], reg["orientation_dot"]["cy"]]
+    # expected marker-rectangle aspect (short/long) -- a strong shape prior that
+    # rejects the iPad bezel (~0.75) and stray cell quads.
+    ew = np.hypot(*(mm[1] - mm[0]))
+    eh = np.hypot(*(mm[3] - mm[0]))
+    exp_aspect = min(ew, eh) / max(ew, eh)
+
+    cand = list(range(len(square)))
+    if len(cand) > 24:                               # cap combos (markers are
+        d = ((pts - pts.mean(0)) ** 2).sum(1)        # among the outermost)
+        cand = list(np.argsort(-d)[:24])
+
+    def shape(q):
+        c = q.mean(0)
+        r = q[np.argsort(np.arctan2(q[:, 1] - c[1], q[:, 0] - c[0]))]
+        s = [np.hypot(*(r[i] - r[(i + 1) % 4])) for i in range(4)]
+        wd, ht = (s[0] + s[2]) / 2, (s[1] + s[3]) / 2
+        asp = min(wd, ht) / max(wd, ht, 1e-6)
+        return asp, _quad_area(r), r
+
+    # pick the 4 blobs forming the largest quad whose aspect matches the markers
+    best = None
+    for combo in itertools.combinations(cand, 4):
+        asp, area, ring = shape(pts[list(combo)])
+        if area < 0.003 * h * w:
+            continue
+        score = area * np.exp(-((asp - exp_aspect) / 0.2) ** 2)
+        if best is None or score > best[0]:
+            best = (score, ring, combo)
+    if best is None:
+        raise SystemExit("error: could not locate the pad (no plausible marker quad)")
+    ring, combo = best[1], best[2]
+    other = np.array([pts[i] for i in range(len(square)) if i not in combo])
+
+    # orient: try the 8 labellings (4 rotations x 2 flips); keep the one whose
+    # projected orientation dot lands on a real (non-corner) blob.
+    bestH = None
+    for flip in (ring, ring[::-1]):
+        for roll in range(4):
+            H = homography(mm, np.roll(flip, roll, axis=0))
+            dpx = project(H, [dot_mm])[0]
+            ddist = float(np.hypot(*(other - dpx).T).min()) if len(other) else 0.0
+            if bestH is None or ddist < bestH[0]:
+                bestH = (ddist, H)
+    return bestH[1], [square[i] for i in combo]
+
+
 def _prep(rgb, max_dim, blur_frac, H_probe=None):
     """Downscale a big phone photo (speed + mild anti-alias) and return it."""
     im = Image.fromarray(rgb)
@@ -299,8 +385,7 @@ def _sample_cells_linear(layout, rgb0, max_dim, blur_frac):
     win_xy = np.array([[w["cx"], w["cy"]] for w in win], float)
 
     rgb = _prep(rgb0, max_dim, blur_frac)
-    corners, dot = detect_markers(rgb)
-    H = order_and_fit(corners, dot, layout)
+    H, corners = _locate(rgb, layout)
     c0 = cells[0]
     cpx = float(np.hypot(*(project(H, [(c0["cx"] + c0["w"] / 2, c0["cy"])])[0]
                            - project(H, [(c0["cx"] - c0["w"] / 2, c0["cy"])])[0])))
@@ -317,7 +402,7 @@ def _sample_cells_linear(layout, rgb0, max_dim, blur_frac):
         [sample_patch(smooth, H, c["cx"], c["cy"], c["w"], c["h"]) for c in cells],
         float) / 255.0)
     T = np.clip(cell_rgb / np.clip(ref, 1e-6, None), 0, 1.5)
-    return T, H, corners, dot
+    return T, H, corners
 
 
 def measure(layout, photos, cals=None, max_dim=1600, blur_frac=0.03):
@@ -364,8 +449,7 @@ def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10
     samples = []
     for screen, rgb0 in photos.items():
         rgb = _prep(rgb0, max_dim, blur_frac)
-        corners, dot = detect_markers(rgb, dark_frac=dark_frac)
-        H = order_and_fit(corners, dot, layout)
+        H, corners = _locate(rgb, layout, dark_frac=dark_frac)
 
         # blur to smooth print texture (layer lines) before SAMPLING, with a
         # radius tied to the projected cell size so it averages several layer
@@ -417,7 +501,7 @@ def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10
             "max_ref": round(max_ref, 1),
         }
         if diag_dir is not None:
-            _draw_diag(rgb, H, cells, win, corners, dot,
+            _draw_diag(rgb, H, cells, win, corners, None,
                        os.path.join(diag_dir, "detect_%s.png" % screen))
 
     # headline: absorption per display primary (diagonal), falling back to white
@@ -711,7 +795,35 @@ def _load_or_make_layout(out_dir):
 
 
 # --------------------------------------------------------------------------- #
+_PIL_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".tif", ".tiff"}
+
+
 def _load_photo(path):
+    """Load a photo as an 8-bit sRGB array.
+
+    Common formats load via PIL.  Anything else is tried as a camera RAW via
+    rawpy/libraw (auto-detects DNG/ARW/CR2/CR3/NEF/RW2/...): we develop it LINEAR
+    (gamma 1.0, no auto-bright, camera white balance) -- which drops the phone's
+    proprietary tone curve and in-camera processing -- then re-encode with a KNOWN
+    sRGB curve, so the analyser's gamma decode recovers true linear light exactly.
+    """
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in _PIL_EXT:
+        try:
+            import rawpy
+            with rawpy.imread(path) as r:
+                lin = r.postprocess(gamma=(1, 1), no_auto_bright=True,
+                                    output_bps=16, use_camera_wb=True)
+            lin = lin.astype(np.float64) / 65535.0
+            sys.stderr.write("decoded RAW %s (%dx%d) via rawpy -> linear\n"
+                             % (os.path.basename(path), lin.shape[1], lin.shape[0]))
+            return (np.clip(linear_to_srgb(lin), 0, 1) * 255).astype(np.uint8)
+        except ImportError:
+            raise SystemExit("error: %s looks like RAW but rawpy isn't installed "
+                             "(pip install rawpy)" % path)
+        except Exception as e:
+            sys.stderr.write("rawpy could not read %s (%s); trying PIL\n"
+                             % (path, e))
     return np.asarray(Image.open(path).convert("RGB"))
 
 
