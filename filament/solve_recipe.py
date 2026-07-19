@@ -349,6 +349,65 @@ def _load_pool(opts):
     return pool
 
 
+def parse_stack(spec):
+    """'red=0.2,green=0.8' -> {'red': 0.2, 'green': 0.8} (thicknesses in mm)."""
+    out = {}
+    for part in spec.split(","):
+        name, t = part.split("=")
+        out[name.strip()] = float(t)
+    return out
+
+
+def predict_stack(byname, stack):
+    """stack: {filament_name: thickness_mm}.  Returns (linear, hex, Lab)."""
+    models = [byname[n] for n in stack]
+    thicks = [stack[n] for n in stack]
+    lin = predict_linear(models, thicks)
+    return lin, linear_to_hex(lin), linear_to_lab(lin)
+
+
+def write_predict_swatches(rows, path, sw=140, hh=60):
+    img = Image.new("RGB", (sw + 300, hh * len(rows) + 2), (250, 250, 252))
+    d = ImageDraw.Draw(img)
+    for i, r in enumerate(rows):
+        y = i * hh + 1
+        rgb = tuple(int(r["predicted_hex"][k:k + 2], 16) for k in (0, 2, 4))
+        d.rectangle([1, y, sw, y + hh - 2], fill=rgb)
+        d.text((sw + 10, y + 8), r["label"], fill=(40, 40, 40))
+        d.text((sw + 10, y + 28), "-> #%s   L*%.0f a*%.0f b*%.0f"
+               % (r["predicted_hex"], *r["lab"]), fill=(90, 90, 110))
+    img.save(path)
+
+
+def run_predict(opts):
+    pool = _load_pool(opts)
+    if not pool:
+        raise SystemExit("error: no calibrations (use --cal or --cal-dir)")
+    byname = {m.name: m for m in pool}
+    rows = []
+    print("\n%-30s %-9s  Lab" % ("stack (mm, top->bottom)", "predict"))
+    print("-" * 56)
+    for spec in opts.stack:
+        stack = parse_stack(spec)
+        miss = [n for n in stack if n not in byname]
+        if miss:
+            raise SystemExit("error: no calibration for %s (have %s)"
+                             % (miss, list(byname)))
+        lin, hx, lab = predict_stack(byname, stack)
+        label = " + ".join("%s %.2f" % (n, t) for n, t in stack.items())
+        rows.append({"label": label, "stack": stack, "predicted_hex": hx,
+                     "lab": [round(x, 1) for x in lab]})
+        print("%-30s #%-8s  L*%.0f a*%.0f b*%.0f" % (label, hx, *lab))
+    os.makedirs(opts.out_dir, exist_ok=True)
+    with open(os.path.join(opts.out_dir, "predictions.json"), "w") as f:
+        json.dump({"filaments": [m.name for m in pool], "stacks": rows}, f, indent=2)
+    write_predict_swatches(rows, os.path.join(opts.out_dir,
+                                              "predicted_swatches.png"))
+    sys.stderr.write("\nwrote predictions.json + predicted_swatches.png to %s\n"
+                     % opts.out_dir)
+    return 0
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(
         description=__doc__,
@@ -376,12 +435,23 @@ def main(argv=None):
                     help="prefer fewer filaments when within this dE of the best")
     sv.add_argument("--out-dir", default="filament/recipes")
 
+    pr = sub.add_parser("predict",
+                        help="forward: predict a filament stack's backlit colour")
+    pr.add_argument("--cal", action="append",
+                    help="filament calibration: name=path/to/calibration.json")
+    pr.add_argument("--cal-dir", help="folder of <name>/calibration.json")
+    pr.add_argument("--stack", action="append", required=True,
+                    help="a stack, e.g. red=0.2,green=0.8 (mm); repeatable")
+    pr.add_argument("--out-dir", default="filament/predictions")
+
     st = sub.add_parser("selftest", help="synthetic recover-the-recipe check")
     st.add_argument("--out-dir", default="/tmp/recipes_selftest")
 
     opts = p.parse_args(argv)
     if opts.cmd == "selftest":
         return run_selftest(opts.out_dir)
+    if opts.cmd == "predict":
+        return run_predict(opts)
 
     if opts.mode == "sub-layer":
         raise SystemExit(
