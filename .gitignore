@@ -230,6 +230,9 @@ color_*.svg
 # Filament calibration generated pads + analyzer/solver output
 filament/pad/
 filament/mixpad/
+filament/stackpad/
+filament/measured/
+filament/predictions/
 filament/cal_*/
 filament/cals/
 filament/cal_out/
