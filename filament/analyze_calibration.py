@@ -481,8 +481,12 @@ def _quality_warnings(screens):
 
 
 def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10,
-            max_dim=1600, blur_frac=0.03, diag_dir=None):
-    """photos: dict screen_colour -> HxWx3 uint8 array.  Returns calibration dict."""
+            max_dim=1600, blur_frac=0.03, layer_mm=None, diag_dir=None):
+    """photos: dict screen_colour -> HxWx3 uint8 array.  Returns calibration dict.
+
+    layer_mm records the slicer layer height the pad was printed at -- absorption
+    of translucent FDM is layer-height dependent, so a calibration only applies to
+    prints at the SAME layer height."""
     cells = layout["cells"]
     thick = np.array([c["thickness_mm"] for c in cells], float)
     cell_xy = np.array([[c["cx"], c["cy"]] for c in cells], float)
@@ -567,6 +571,7 @@ def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10
     cal = {
         "filament": name,
         "model": "ln T = b - a*t  (a = absorption per mm, T0 = exp(b) surface term)",
+        "layer_height_mm": layer_mm,        # a only valid at THIS print layer height
         "step_mm": layout["step_mm"], "max_mm": layout["max_mm"],
         "primary_absorption_per_mm": primary,
         "screens": screens,
@@ -942,6 +947,10 @@ def main(argv=None):
     an.add_argument("--blur", type=float, default=0.03,
                     help="sampling blur as a fraction of cell size, to smooth "
                          "print layer-line texture (default 0.03; 0 disables)")
+    an.add_argument("--layer-mm", type=float, default=None,
+                    help="slicer layer height the pad was printed at -- absorption "
+                         "is layer-height dependent, so record it and reuse the "
+                         "same height for mixture pads + panes")
 
     sy = sub.add_parser("synth", help="render one synthetic pad photo")
     sy.add_argument("--layout", required=True)
@@ -987,7 +996,7 @@ def main(argv=None):
     os.makedirs(opts.out_dir, exist_ok=True)
     cal = analyze(layout, photos, name=opts.name,
                   ref_floor_frac=opts.ref_floor_frac, dark_frac=opts.dark_frac,
-                  max_dim=opts.max_dim, blur_frac=opts.blur,
+                  max_dim=opts.max_dim, blur_frac=opts.blur, layer_mm=opts.layer_mm,
                   diag_dir=opts.out_dir)
     out = os.path.join(opts.out_dir, "calibration.json")
     with open(out, "w") as f:
