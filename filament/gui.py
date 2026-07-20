@@ -230,10 +230,14 @@ async function analyze(){
  btn.disabled=false;document.getElementById('c_status').textContent='';
  if(res.cmd)document.getElementById('c_cmd').innerHTML='<div class=cmd>'+res.cmd+'</div>';
  let h='';
+ const badpad=(res.warnings||[]).some(w=>/PAD MISMATCH/i.test(w));
  if(!res.ok){h+='<div class=warn><b>failed 失败:</b><br><pre class=out>'+(res.stderr||'')+'</pre></div>';}
+ else if(badpad){h+='<div class=warn><b>✗ INVALID — pad does not match the layout · 无效：标定板与布局不匹配</b><br>'+
+   'The cells were sampled in the wrong places, so the numbers below are bogus. This pad was printed from a different/older make_calibration_pad version. Reprint the pad from the CURRENT make_calibration_pad.py (the one that made your red/blue pads) and reshoot.<br>'+
+   '格子采样位置错误，下面的数值无效。此标定板来自不同/更旧的生成器版本。请用当前的 make_calibration_pad.py（与红/蓝板相同）重打后重拍。</div>';}
  else if(res.primary){h+='<div class=done>✓ calibrated · 校准成功 &nbsp;→ filament/calibration/'+(document.getElementById('c_name').value||'filament')+'/</div>';}
  const rel=res.reliability;
- if(res.primary){h+='<div class=ok><b>absorption /mm · 吸收系数</b> &nbsp; R '+res.primary.R+' &nbsp; G '+res.primary.G+' &nbsp; B '+res.primary.B+'</div>';}
+ if(res.primary&&!badpad){h+='<div class=ok><b>absorption /mm · 吸收系数</b> &nbsp; R '+res.primary.R+' &nbsp; G '+res.primary.G+' &nbsp; B '+res.primary.B+'</div>';}
  if(rel){const CLS={'intense':'INTENSE 强吸收','normal-transparent':'normal 普通透明'};
    h+='<p><b>class 类别:</b> '+(CLS[rel.filament_class]||rel.filament_class);
    if(rel.mix_advice)h+='<br><span style="color:#b33">⚠ '+rel.mix_advice+'<br>该耗材吸收极强，混色占比请低于上限，否则会盖过其它颜色。</span>';h+='</p>';}
