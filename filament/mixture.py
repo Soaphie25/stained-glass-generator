@@ -215,28 +215,49 @@ def run_selftest():
     return 0 if ok else 1
 
 
+def _font(size):
+    """A legible, scalable font -- Pillow>=10.1 scales its bundled default; else
+    fall back to DejaVuSans, then the tiny bitmap default."""
+    from PIL import ImageFont
+    try:
+        return ImageFont.load_default(size)
+    except TypeError:
+        pass
+    for p in ("DejaVuSans.ttf",
+              "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+              "/Library/Fonts/Arial.ttf", "/System/Library/Fonts/Helvetica.ttc"):
+        try:
+            return ImageFont.truetype(p, size)
+        except Exception:
+            pass
+    return ImageFont.load_default()
+
+
 def _draw_mix_swatches(nameA, nameB, rows, path):
     """Visual ramp: measured vs model-predicted vs baseline colour per ratio, so
     the fit quality is obvious at a glance (measured should match model)."""
     from PIL import Image, ImageDraw
-    sw, hh, lx = 118, 46, 92
-    W, H = lx + sw * 3 + 150, hh * (len(rows) + 1) + 8
+    sw, hh, lx, top = 190, 84, 176, 44
+    fb, fh = _font(24), _font(20)                    # body / header
+    W, H = lx + sw * 3 + 210, top + hh * len(rows) + 10
     img = Image.new("RGB", (W, H), (250, 250, 252))
     d = ImageDraw.Draw(img)
-    heads = ["measured (real)", "model (fit)", "baseline (abs only)"]
+    heads = ["measured", "model (fit)", "baseline"]
     for j, t in enumerate(heads):
-        d.text((lx + j * sw + 6, 8), t, fill=(35, 35, 45))
-    d.text((6, 8), "%s%% / %s%%" % (nameA[:5], nameB[:5]), fill=(35, 35, 45))
-    d.text((lx + 3 * sw + 10, 8), "dE model / base", fill=(35, 35, 45))
+        d.text((lx + j * sw + 8, 12), t, fill=(30, 30, 42), font=fh)
+    d.text((10, 12), "%s/%s %%" % (nameA[:4], nameB[:4]), fill=(30, 30, 42), font=fh)
+    d.text((lx + 3 * sw + 12, 12), "dE mdl/base", fill=(30, 30, 42), font=fh)
     for i, (pb, meas, pred, base, de, db) in enumerate(rows):
-        y = (i + 1) * hh + 4
-        d.text((6, y + 15), "%d / %d" % (100 - pb, pb), fill=(70, 70, 80))
+        y = top + i * hh + 4
+        d.text((10, y + hh // 2 - 14), "%d / %d" % (100 - pb, pb),
+               fill=(70, 70, 80), font=fb)
         for j, hx in enumerate((meas, pred, base)):
             rgb = tuple(int(hx[k:k + 2], 16) for k in (0, 2, 4))
-            d.rectangle([lx + j * sw + 2, y, lx + j * sw + sw - 5, y + hh - 6],
+            d.rectangle([lx + j * sw + 3, y, lx + j * sw + sw - 8, y + hh - 8],
                         fill=rgb)
         col = (170, 60, 60) if de > 8 else (70, 70, 80)
-        d.text((lx + 3 * sw + 12, y + 15), "%.1f / %.1f" % (de, db), fill=col)
+        d.text((lx + 3 * sw + 16, y + hh // 2 - 14), "%.1f / %.1f" % (de, db),
+               fill=col, font=fb)
     img.save(path)
 
 
