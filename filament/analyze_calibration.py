@@ -649,8 +649,36 @@ def _reliability(cal):
             "mix_advice": mix_advice}
 
 
+def _manual_H(layout, points, rgb):
+    """4 hand-picked corner points (any order) -> homography, bypassing blob
+    detection.  Tries all 8 labellings (4 rotations x 2 flips) and keeps the one
+    whose reference windows land on the BRIGHT bare-screen holes -- so the user
+    only has to click the 4 corners, not identify which is which."""
+    reg = layout["register_markers"]["corners"]
+    mm = np.array([[reg[n]["cx"], reg[n]["cy"]] for n in
+                   ("top_left", "top_right", "bottom_right", "bottom_left")], float)
+    win = np.array([[w["cx"], w["cy"]] for w in layout["reference_windows"]], float)
+    v = rgb.max(axis=2).astype(np.float32)
+    h, w = v.shape
+    P = np.array(points, float)
+    c = P.mean(axis=0)                                # sort clicks into quad order
+    P = P[np.argsort(np.arctan2(P[:, 1] - c[1], P[:, 0] - c[0]))]
+    best = None
+    for flip in (P, P[::-1]):
+        for roll in range(4):
+            H = homography(mm, np.roll(flip, roll, axis=0))
+            px = project(H, win)
+            xs = np.clip(px[:, 0], 0, w - 1).astype(int)
+            ys = np.clip(px[:, 1], 0, h - 1).astype(int)
+            score = float(v[ys, xs].mean())          # holes should be bright
+            if best is None or score > best[0]:
+                best = (score, H)
+    return best[1]
+
+
 def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10,
-            max_dim=1600, blur_frac=0.03, layer_mm=None, diag_dir=None):
+            max_dim=1600, blur_frac=0.03, layer_mm=None, diag_dir=None,
+            manual_markers=None):
     """photos: dict screen_colour -> HxWx3 uint8 array.  Returns calibration dict.
 
     layer_mm records the slicer layer height the pad was printed at -- absorption
@@ -672,11 +700,18 @@ def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10
     skipped = []
     for screen, rgb0 in photos.items():
         rgb = _prep(rgb0, max_dim, blur_frac)
-        try:
-            H, corners = _locate(rgb, layout, dark_frac=dark_frac)
-        except PadDetectionError as e:               # skip this shot, keep going
-            skipped.append((screen, str(e)))
-            continue
+        mpts = (manual_markers or {}).get(screen)    # user-picked corners?
+        if mpts:                                     # scale orig-image px -> rgb px
+            sx, sy = rgb.shape[1] / rgb0.shape[1], rgb.shape[0] / rgb0.shape[0]
+            pts = [(x * sx, y * sy) for x, y in mpts]
+            H = _manual_H(layout, pts, rgb)
+            corners = [{"cx": x, "cy": y} for x, y in pts]
+        else:
+            try:
+                H, corners = _locate(rgb, layout, dark_frac=dark_frac)
+            except PadDetectionError as e:           # skip this shot, keep going
+                skipped.append((screen, str(e)))
+                continue
 
         # blur to smooth print texture (layer lines) before SAMPLING, with a
         # radius tied to the projected cell size so it averages several layer
@@ -1137,6 +1172,9 @@ def main(argv=None):
                          "(default %(default)s)")
     an.add_argument("--out-dir", default=None,
                     help="override the output folder (default <cal-root>/<name>)")
+    an.add_argument("--markers", help="bypass auto-detection with hand-picked "
+                    "corners for the WHITE shot: 'x1,y1;x2,y2;x3,y3;x4,y4' in image "
+                    "pixels, order TL,TR,BR,BL")
     an.add_argument("--dark-frac", type=float, default=0.10,
                     help="marker darkness threshold as frac of screen brightness")
     an.add_argument("--ref-floor-frac", type=float, default=0.18)
@@ -1195,10 +1233,16 @@ def main(argv=None):
     if opts.out_dir is None:                         # natural: <cal-root>/<name>/
         opts.out_dir = os.path.join(opts.cal_root, opts.name)
     os.makedirs(opts.out_dir, exist_ok=True)
+    manual = None
+    if opts.markers:
+        pts = [tuple(float(v) for v in p.split(",")) for p in opts.markers.split(";")]
+        if len(pts) != 4:
+            raise SystemExit("error: --markers needs 4 'x,y' points (TL,TR,BR,BL)")
+        manual = {"white": pts}
     cal = analyze(layout, photos, name=opts.name,
                   ref_floor_frac=opts.ref_floor_frac, dark_frac=opts.dark_frac,
                   max_dim=opts.max_dim, blur_frac=opts.blur, layer_mm=opts.layer_mm,
-                  diag_dir=opts.out_dir)
+                  diag_dir=opts.out_dir, manual_markers=manual)
     # A pad/layout mismatch means the cells were sampled in the wrong places, so
     # the numbers are bogus -- DON'T let it clobber a good calibration.json; write
     # a quarantined *_INVALID.json instead.
