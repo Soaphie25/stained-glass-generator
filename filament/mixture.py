@@ -215,6 +215,31 @@ def run_selftest():
     return 0 if ok else 1
 
 
+def _draw_mix_swatches(nameA, nameB, rows, path):
+    """Visual ramp: measured vs model-predicted vs baseline colour per ratio, so
+    the fit quality is obvious at a glance (measured should match model)."""
+    from PIL import Image, ImageDraw
+    sw, hh, lx = 118, 46, 92
+    W, H = lx + sw * 3 + 150, hh * (len(rows) + 1) + 8
+    img = Image.new("RGB", (W, H), (250, 250, 252))
+    d = ImageDraw.Draw(img)
+    heads = ["measured (real)", "model (fit)", "baseline (abs only)"]
+    for j, t in enumerate(heads):
+        d.text((lx + j * sw + 6, 8), t, fill=(35, 35, 45))
+    d.text((6, 8), "%s%% / %s%%" % (nameA[:5], nameB[:5]), fill=(35, 35, 45))
+    d.text((lx + 3 * sw + 10, 8), "dE model / base", fill=(35, 35, 45))
+    for i, (pb, meas, pred, base, de, db) in enumerate(rows):
+        y = (i + 1) * hh + 4
+        d.text((6, y + 15), "%d / %d" % (100 - pb, pb), fill=(70, 70, 80))
+        for j, hx in enumerate((meas, pred, base)):
+            rgb = tuple(int(hx[k:k + 2], 16) for k in (0, 2, 4))
+            d.rectangle([lx + j * sw + 2, y, lx + j * sw + sw - 5, y + hh - 6],
+                        fill=rgb)
+        col = (170, 60, 60) if de > 8 else (70, 70, 80)
+        d.text((lx + 3 * sw + 12, y + 15), "%.1f / %.1f" % (de, db), fill=col)
+    img.save(path)
+
+
 def run_fit(opts):
     """Fit per-filament sigma from a printed sub-layer mixture ramp photo."""
     import json
@@ -240,7 +265,7 @@ def run_fit(opts):
     for n in (fA.name, fB.name):
         print("  %-8s %s" % (n, np.round(sigma[n], 3).tolist()))
     print("\n  %%%-3s  measured   predicted  baseline   dE(model) dE(base)" % "B")
-    des, bas = [], []
+    des, bas, rows = [], [], []
     for i, p in enumerate(pads):
         r = p["pct_b"] / 100.0
         meas = np.clip(T[i], 0, 1)
@@ -249,12 +274,16 @@ def run_fit(opts):
         de, db = delta_e(meas, pred), delta_e(meas, base)
         des.append(de)
         bas.append(db)
+        rows.append((int(p["pct_b"]), linear_to_hex(meas), linear_to_hex(pred),
+                     linear_to_hex(base), de, db))
         print("  %3.0f  #%-8s #%-8s #%-8s  %6.1f  %6.1f"
               % (p["pct_b"], linear_to_hex(meas), linear_to_hex(pred),
                  linear_to_hex(base), de, db))
     print("\nmodel   mean dE %.2f / max %.2f" % (np.mean(des), np.max(des)))
     print("baseline mean dE %.2f / max %.2f  (scatter off)" % (np.mean(bas), np.max(bas)))
     os.makedirs(opts.out_dir, exist_ok=True)
+    _draw_mix_swatches(fA.name, fB.name, rows,
+                       os.path.join(opts.out_dir, "mixture_fit.png"))
     with open(os.path.join(opts.out_dir, "mixture_calibration.json"), "w") as f:
         json.dump({"filaments": [fA.name, fB.name], "thickness_mm": Tmm,
                    "sigma": {n: [float(x) for x in sigma[n]] for n in sigma},

@@ -163,8 +163,12 @@ def do_mixfit(data):
             "--a", "%s=%s/%s/calibration.json" % (a, CALROOT, a),
             "--b", "%s=%s/%s/calibration.json" % (b, CALROOT, b)]
     rc, out, err = sh(args)
+    pair = "+".join(sorted((a, b)))
     res = {"ok": rc == 0, "cmd": " ".join(args), "stdout": out, "stderr": err,
-           "pair": "+".join(sorted((a, b)))}
+           "pair": pair}
+    p = "%s/mix/%s/mixture_fit.png" % (CALROOT, pair)
+    if os.path.isfile(os.path.join(ROOT, p)):
+        res["images"] = [p]
     return res
 
 
@@ -349,7 +353,8 @@ async function mixfit(){const btn=document.getElementById('mx_go');btn.disabled=
    // pull the model vs baseline dE summary lines
    const t=res.stdout||'',m=t.match(/model.*dE.*/i),b=t.match(/baseline.*dE.*/i);
    if(m||b)h+='<div class=ok>'+[m,b].filter(Boolean).map(x=>x[0]).join('<br>')+'<br><span style="color:#555">lower model ΔE = better; the pair is now a direct posterior in the LUT. 模型 ΔE 越低越好，该组合已作为直接后验进入查找表。</span></div>';
-   h+='<pre class=out>'+t+'</pre>';}
+   if(res.images)res.images.forEach(p=>h+=img(p));
+   h+='<details><summary>raw table 原始数据</summary><pre class=out>'+t+'</pre></details>';}
  document.getElementById('mx_result').innerHTML=h;}
 async function runMap(){document.getElementById('m_status').textContent='running…';
  const r=await post('/map',{});document.getElementById('m_status').textContent='';
