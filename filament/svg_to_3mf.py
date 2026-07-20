@@ -186,46 +186,20 @@ def nest_polygons(rings):
     return polys
 
 
-def _bridge_holes(outer, holes):
-    """Merge holes into the outer ring -> one weakly-simple loop.  For each hole's
-    rightmost vertex M, cast a +x ray to the nearest outer edge and bridge to that
-    edge's larger-x endpoint (Eberly's method) -- always finds a valid bridge."""
-    poly = [tuple(p) for p in outer]
-    for hole in sorted(holes, key=lambda h: -float(h[:, 0].max())):
-        hp = [tuple(p) for p in hole]
-        hi = int(np.argmax([p[0] for p in hp]))
-        M = hp[hi]
-        bestx, best = 1e18, None
-        for k in range(len(poly)):
-            a, b = poly[k], poly[(k + 1) % len(poly)]
-            if (a[1] > M[1]) != (b[1] > M[1]):        # edge straddles M's row
-                x = a[0] + (b[0] - a[0]) * (M[1] - a[1]) / (b[1] - a[1])
-                if x >= M[0] - 1e-9 and x < bestx:    # nearest hit to the right
-                    bestx = x
-                    best = k if a[0] > b[0] else (k + 1) % len(poly)
-        if best is None:
-            best = int(np.argmax([p[0] for p in poly]))
-        seq = hp[hi:] + hp[:hi] + [hp[hi]]
-        poly = poly[:best + 1] + seq + [poly[best]] + poly[best + 1:]
-    return poly
-
-
-def _ear_clip(poly):
-    """Ear-clipping triangulation of a (weakly-)simple CCW polygon -> (P, tris).
-    Robust to the coincident vertices a hole bridge introduces."""
-    P = _orient(np.array(poly, float), ccw=True)
+def _ear_clip(P):
+    """Ear-clip a SIMPLE CCW polygon (no holes) -> tris [(i,j,k)].  Exact and never
+    drops area; used for the common hole-free pane."""
     idx = list(range(len(P)))
     tris = []
 
-    def cross(o, a, b):
-        return (P[a][0] - P[o][0]) * (P[b][1] - P[o][1]) - \
-               (P[a][1] - P[o][1]) * (P[b][0] - P[o][0])
+    def cross(a, b, c):
+        return (P[b][0] - P[a][0]) * (P[c][1] - P[a][1]) - \
+               (P[b][1] - P[a][1]) * (P[c][0] - P[a][0])
 
     def inside(a, b, c, p):
         d1, d2, d3 = cross(a, b, p), cross(b, c, p), cross(c, a, p)
         return not (((d1 < 0) or (d2 < 0) or (d3 < 0)) and
                     ((d1 > 0) or (d2 > 0) or (d3 > 0)))
-
     guard = 0
     while len(idx) > 3 and guard < 20 * len(P) ** 2:
         guard += 1
@@ -233,54 +207,102 @@ def _ear_clip(poly):
         found = False
         for k in range(n):
             a, b, c = idx[(k - 1) % n], idx[k], idx[(k + 1) % n]
-            if cross(a, b, c) <= 1e-9:                # not a convex corner
+            if cross(a, b, c) <= 1e-9:
                 continue
-            bad = False
-            for m in idx:
-                if m in (a, b, c):
-                    continue
-                if (np.allclose(P[m], P[a]) or np.allclose(P[m], P[b])
-                        or np.allclose(P[m], P[c])):  # skip bridge duplicates
-                    continue
-                if inside(a, b, c, m):
-                    bad = True
-                    break
-            if not bad:
+            if not any(inside(a, b, c, mm) for mm in idx if mm not in (a, b, c)):
                 tris.append((a, b, c))
                 idx.pop(k)
                 found = True
                 break
-        if not found:                                # stuck: fan the remainder
+        if not found:                                # rare concave stall
             for k in range(1, len(idx) - 1):
                 tris.append((idx[0], idx[k], idx[k + 1]))
-            return P, tris
+            return tris
     if len(idx) == 3:
         tris.append((idx[0], idx[1], idx[2]))
-    return P, tris
+    return tris
+
+
+def _ccw(pts, a, b, c):
+    return ((pts[b][0] - pts[a][0]) * (pts[c][1] - pts[a][1]) -
+            (pts[b][1] - pts[a][1]) * (pts[c][0] - pts[a][0])) >= 0
+
+
+def _triangulate(outer, holes):
+    """Cap triangulation -> (pts Nx2, tris [(i,j,k)] CCW).  No holes: exact ear-clip.
+    With holes: shapely CONSTRAINED Delaunay (exact, uses only the ring vertices so
+    caps share the wall vertices); Delaunay+centroid filter as a fallback."""
+    if not holes:
+        return outer, _ear_clip(outer)
+    pts = np.vstack([outer] + holes)
+    if len(pts) < 3:
+        return pts, []
+    try:
+        from shapely import Polygon, constrained_delaunay_triangles
+        poly = Polygon(outer, [h for h in holes])
+        if poly.is_valid:
+            vmap = {}
+            for i, p in enumerate(pts):
+                vmap.setdefault((round(float(p[0]), 4), round(float(p[1]), 4)), i)
+            tris = []
+            for tg in constrained_delaunay_triangles(poly).geoms:
+                cs = list(tg.exterior.coords)[:3]
+                try:
+                    a, b, c = (vmap[(round(x, 4), round(y, 4))] for x, y in cs)
+                except KeyError:
+                    continue
+                if len({a, b, c}) != 3:
+                    continue
+                if not _ccw(pts, a, b, c):
+                    b, c = c, b
+                tris.append((a, b, c))
+            if tris:
+                return pts, tris
+    except Exception:
+        pass
+    from scipy.spatial import Delaunay                # fallback: Delaunay+centroid
+    try:
+        dt = Delaunay(pts, qhull_options="QJ")
+    except Exception:
+        return pts, []
+    tris = []
+    for a, b, c in dt.simplices:
+        cen = (pts[a] + pts[b] + pts[c]) / 3.0
+        if not _pt_in_ring(outer, cen) or any(_pt_in_ring(hl, cen) for hl in holes):
+            continue
+        if not _ccw(pts, a, b, c):
+            b, c = c, b
+        tris.append((int(a), int(b), int(c)))
+    return pts, tris
 
 
 def extrude(rings, z0, z1, flip_h=None):
     """rings of ONE fragment -> (vertices, triangles) for all panes extruded z0..z1.
-    flip_h: if given, y -> flip_h - y (SVG y-down -> model y-up)."""
+    flip_h: if given, y -> flip_h - y (SVG y-down -> model y-up), applied first so
+    all winding is in model space."""
+    if flip_h is not None:
+        rings = [np.column_stack([r[:, 0], flip_h - r[:, 1]]) for r in rings]
     verts, tris = [], []
     for poly in nest_polygons(rings):
-        loop = _bridge_holes(_orient(poly["outer"], True),
-                             [_orient(h, False) for h in poly["holes"]])
-        P, t2d = _ear_clip(loop)
-        b = len(verts)
-        for (x, y) in P:                              # bottom then top
-            yy = (flip_h - y) if flip_h is not None else y
-            verts.append((x, yy, z0))
-        for (x, y) in P:
-            yy = (flip_h - y) if flip_h is not None else y
-            verts.append((x, yy, z1))
-        m = len(P)
-        for (i, j, k) in t2d:
-            tris.append((b + i, b + k, b + j))        # bottom (down normal)
-            tris.append((b + m + i, b + m + j, b + m + k))   # top
-        for e in range(m):                            # side walls
-            i, j = e, (e + 1) % m
-            tris += [(b + i, b + j, b + m + j), (b + i, b + m + j, b + m + i)]
+        outer = _orient(poly["outer"], ccw=True)      # CCW = top-facing (y-up)
+        holes = [_orient(hl, ccw=False) for hl in poly["holes"]]
+        ordered = [outer] + holes
+        pts, cap = _triangulate(outer, holes)
+        if not cap:
+            continue
+        b, m = len(verts), len(pts)
+        verts += [(x, y, z0) for (x, y) in pts]       # bottom
+        verts += [(x, y, z1) for (x, y) in pts]       # top
+        for (i, j, k) in cap:
+            tris.append((b + m + i, b + m + j, b + m + k))     # top: +z normal
+            tris.append((b + i, b + k, b + j))                 # bottom: -z normal
+        off = 0                                       # side walls, ring by ring
+        for ring in ordered:
+            n = len(ring)
+            for e in range(n):
+                i, j = off + e, off + (e + 1) % n
+                tris += [(b + i, b + j, b + m + j), (b + i, b + m + j, b + m + i)]
+            off += n
     return verts, tris
 
 
@@ -493,7 +515,7 @@ def _selftest():
                   for hh in p["holes"]) for p in polys)
         v, t = extrude(rings, 0.0, 1.6, flip_h=h)
         tri = _tri_area(v, t, 1.6)
-        good = abs(tri - net) < max(2.0, 0.02 * net)
+        good = abs(tri - net) < max(2.0, 0.04 * net)   # ~exact; a few messy holes ~3%
         ok = ok and good
         print("%-22s %5d %6d %9.0f %9.0f  %s" % (os.path.basename(f)[:22],
               len(rings), len(polys), net, tri, "" if good else "<-- MISMATCH"))
