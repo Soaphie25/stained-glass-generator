@@ -73,7 +73,8 @@ def do_convert(data):
         fh.write(base64.b64decode(f["b64"].split(",")[-1]))
     fragdir = os.path.join(WORK, "frag")
     args = ["python3", "png_to_stained_glass_svg.py", img,
-            "--fragments-dir", fragdir, "--fragment-color", "original"]
+            "--fragments-dir", fragdir, "--leading-svg", os.path.join(WORK, "leading.svg"),
+            "--fragment-color", "original"]
     for k in _SVG_OPTS:
         v = (data.get("svg") or {}).get(k)
         if v not in (None, "", "auto-default"):
@@ -138,7 +139,8 @@ def do_preview(data):
     except SystemExit as e:
         return {"ok": False, "stderr": str(e)}
     prev = os.path.join(WORK, "preview.png")
-    V.render_preview(m, os.path.join(ROOT, prev))
+    lead = os.path.join(ROOT, WORK, "leading.svg")
+    V.render_preview(m, os.path.join(ROOT, prev), leading_svg=lead)
     return {"ok": True, "image": prev, "table": _table(m),
             "dims": [round(m["W"]), round(m["H"])],
             "n_out": sum(1 for r in _table(m) if r["out"])}

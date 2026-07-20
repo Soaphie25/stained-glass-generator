@@ -404,9 +404,30 @@ def map_recipes(frag_dir, cal_root, thickness=1.6, max_delta=20.0,
             "max_delta": max_delta}
 
 
-def render_preview(m, path, ppm=3.0):
+def _read_leading(path):
+    """Leading (came) SVG -> list of (polyline points, stroke-width mm).  These are
+    OPEN stroke paths, drawn black over the panes in the preview only."""
+    txt = open(path).read()
+    out = []
+    for pm in re.finditer(r"<path\b[^>]*>", txt):
+        el = pm.group(0)
+        dm = re.search(r'\bd="([^"]+)"', el)
+        if not dm:
+            continue
+        wm = re.search(r'stroke-width="([\d.]+)"', el)
+        w = float(wm.group(1)) if wm else 0.6
+        nums = re.findall(r"[-+]?\d*\.?\d+", dm.group(1))
+        pts = [(float(nums[i]), float(nums[i + 1]))
+               for i in range(0, len(nums) - 1, 2)]
+        if len(pts) >= 2:
+            out.append((pts, w))
+    return out
+
+
+def render_preview(m, path, ppm=3.0, leading_svg=None):
     """Gamut preview PNG: each pane painted its PRINTABLE recipe colour (what the
-    panel will actually look like), not the original image colour."""
+    panel will actually look like), with the black leading drawn on top if given
+    (preview only -- the leading is NOT in the 3MF; Bambu adds it)."""
     from PIL import Image, ImageDraw
     W, H = m["W"], m["H"]
     img = Image.new("RGB", (max(1, int(W * ppm)), max(1, int(H * ppm))),
@@ -420,6 +441,11 @@ def render_preview(m, path, ppm=3.0):
             panes.append((abs(_ring_area(poly["outer"])), poly["outer"], rgb))
     for _, outer, rgb in sorted(panes, key=lambda x: -x[0]):   # big -> small on top
         d.polygon([(x * ppm, y * ppm) for x, y in outer], fill=rgb)
+    if leading_svg and os.path.isfile(leading_svg):
+        s = m.get("scale", 1.0)                        # rings were scaled; leading too
+        for pts, w in _read_leading(leading_svg):
+            d.line([(x * s * ppm, y * s * ppm) for x, y in pts], fill=(12, 12, 14),
+                   width=max(1, round(w * s * ppm)), joint="curve")
     img.save(path)
     return path
 
