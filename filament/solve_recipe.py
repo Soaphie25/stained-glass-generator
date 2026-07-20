@@ -597,6 +597,75 @@ def run_predict(opts):
     return 0
 
 
+def _draw_filament_map(pool, ths, path):
+    """Palette overview: each filament as backlit swatches at several thicknesses,
+    with its absorption + intensity class alongside."""
+    sw, hh, lw = 96, 66, 96
+    W, H = lw + sw * len(ths) + 250, hh * len(pool) + 34
+    img = Image.new("RGB", (W, H), (250, 250, 252))
+    d = ImageDraw.Draw(img)
+    for j, t in enumerate(ths):
+        d.text((lw + j * sw + 10, 8), "%.1fmm" % t, fill=(60, 60, 70))
+    for i, m in enumerate(pool):
+        y = i * hh + 28
+        d.text((6, y + hh // 2 - 10), m.name, fill=(25, 25, 35))
+        for j, t in enumerate(ths):
+            hexc = linear_to_hex(predict_linear([m], [t]))
+            rgb = tuple(int(hexc[k:k + 2], 16) for k in (0, 2, 4))
+            d.rectangle([lw + j * sw + 2, y, lw + j * sw + sw - 4, y + hh - 6], fill=rgb)
+        x = lw + sw * len(ths) + 14
+        d.text((x, y + 10), "a  R%.2f  G%.2f  B%.2f"
+               % (m.a[0], m.a[1], m.a[2]), fill=(60, 60, 70))
+        if m.max_frac < 1.0:
+            d.text((x, y + 30), "INTENSE -- keep mix < %d%%"
+                   % round(m.max_frac * 100), fill=(170, 60, 60))
+        else:
+            d.text((x, y + 30), "normal transparent", fill=(60, 130, 70))
+    img.save(path)
+
+
+def run_map(opts):
+    """Full palette map: filament table + pair-coverage matrix + swatch image."""
+    pool = _load_pool(opts)
+    if not pool:
+        raise SystemExit("error: no calibrations (use --cal or --cal-dir)")
+    sigma, pair_sigma = load_sigma(opts.mixcal)
+    names = [m.name for m in pool]
+    print("\nFILAMENT MAP  (%d filaments)\n" % len(pool))
+    print("%-10s %-20s %-8s %-6s %s" %
+          ("name", "a  R / G / B  (per mm)", "class", "mix<", "surface@1mm"))
+    print("-" * 62)
+    for m in pool:
+        intense = m.max_frac < 1.0
+        print("%-10s %5.2f %5.2f %5.2f      %-8s %-6s #%s"
+              % (m.name, m.a[0], m.a[1], m.a[2],
+                 "INTENSE" if intense else "normal",
+                 ("%d%%" % round(m.max_frac * 100)) if intense else "-",
+                 linear_to_hex(predict_linear([m], [1.0]))))
+    print("\nPAIR COVERAGE  (D = direct-calibrated pair, g = generalizable, . = none)")
+    print("      " + " ".join("%-3s" % n[:3] for n in names))
+    for i, ni in enumerate(names):
+        cells = []
+        for j, nj in enumerate(names):
+            if i == j:
+                cells.append(" - ")
+            elif tuple(sorted((ni, nj))) in pair_sigma:
+                cells.append(" D ")
+            elif ni in sigma and nj in sigma:
+                cells.append(" g ")
+            else:
+                cells.append(" . ")
+        print("%-5s " % ni[:5] + " ".join(cells))
+    if pair_sigma:
+        print("\ndirect pairs (posterior): %s"
+              % ", ".join("+".join(k) for k in sorted(pair_sigma)))
+    os.makedirs(opts.out_dir, exist_ok=True)
+    ths = [float(x) for x in opts.thicknesses.split(",")]
+    _draw_filament_map(pool, ths, os.path.join(opts.out_dir, "filament_map.png"))
+    sys.stderr.write("\nwrote %s/filament_map.png\n" % opts.out_dir)
+    return 0
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(
         description=__doc__,
@@ -643,6 +712,16 @@ def main(argv=None):
                     help="[--mix] mixture_calibration.json (per-filament sigma)")
     pr.add_argument("--out-dir", default="filament/predictions")
 
+    mp = sub.add_parser("map", help="overview of the whole filament palette")
+    mp.add_argument("--cal", action="append",
+                    help="filament calibration: name=path/to/calibration.json")
+    mp.add_argument("--cal-dir", help="folder of <name>/calibration.json")
+    mp.add_argument("--mixcal", action="append",
+                    help="mixture_calibration.json (per-filament sigma); repeatable")
+    mp.add_argument("--thicknesses", default="0.6,1.2,2.4",
+                    help="swatch thicknesses in mm (comma-separated)")
+    mp.add_argument("--out-dir", default="filament/cals")
+
     st = sub.add_parser("selftest", help="synthetic recover-the-recipe check")
     st.add_argument("--out-dir", default="/tmp/recipes_selftest")
 
@@ -651,6 +730,8 @@ def main(argv=None):
         return run_selftest(opts.out_dir)
     if opts.cmd == "predict":
         return run_predict(opts)
+    if opts.cmd == "map":
+        return run_map(opts)
 
     pool = _load_pool(opts)
     if not pool:

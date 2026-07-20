@@ -121,6 +121,25 @@ Model: `T_c = T0_c * exp(-sum_i a_ic * t_i)` per channel; predicted linear colou
 print has one pair of outer interfaces) — a measured 2-stack will later refine the
 cross-term. A single filament reproduces its calibration exactly.
 
+### 5. See the whole palette — `solve_recipe.py map`
+
+As you calibrate more filaments, `map` gives a one-look overview of the palette:
+each filament's per-channel absorption, its intensity class + recommended mix cap,
+backlit swatches at several thicknesses, and a **pair-coverage matrix** (which
+pairs are directly σ-calibrated `D`, which are only generalizable `g`).
+
+```bash
+python3 filament/solve_recipe.py map --cal-dir filament/cals \
+    --mixcal filament/mixcal/mixture_calibration.json \
+    --mixcal filament/mixcal_gb/mixture_calibration.json   # -> filament_map.png
+```
+
+A **VERY INTENSE** filament (a channel near-opaque, e.g. blue at 8.7/mm in R) is
+flagged with a recommended max mix fraction (`min(0.40, 3/max_a)`): kept as a
+minority it participates, as a majority it swamps the other colours *and* its
+generalized-σ prediction degrades (red–blue: blue≤40% ΔE 7.5 vs blue>40% ΔE 13.4).
+The sub-layer solver enforces the cap automatically for mixes (pure panes are fine).
+
 ## Sub-layer colour mixing (experimental, Bambu Studio Color Mixing)
 
 An alternative to stacking whole-layer blocks: within one solid part, Bambu Studio
