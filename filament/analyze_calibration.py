@@ -264,8 +264,10 @@ def eval_plane(planes, xy):
 # --------------------------------------------------------------------------- #
 def fit_absorption(thick, trans):
     """thick, trans: 1D arrays (transmittance per thickness). Fit ln T=b-a t."""
-    t = np.asarray(thick, float)
-    T = np.asarray(trans, float)
+    t_all = np.asarray(thick, float)
+    T_all = np.asarray(trans, float)
+    t = t_all
+    T = T_all
     ok = np.isfinite(T) & (T > 1e-3) & (T <= 1.5)
     t, T = t[ok], T[ok]
     if len(t) < 3:
@@ -291,10 +293,15 @@ def fit_absorption(thick, trans):
         tmin = float(t[int(np.argmax(T))])            # thickness of brightest cell
         if Tmax < 0.15 and tmin > 1e-6:
             # channel FULLY ABSORBED (floored to black, e.g. red through an
-            # intense blue): the log-fit is fitting black-floor noise.  Report a
-            # lower-bound absorption from the brightest point (surface term ~0.9)
-            # and flag it -- the exact value is unmeasurable but must be LARGE +ve.
-            a_lb = (np.log(0.9) - np.log(max(Tmax, 5e-3))) / tmin
+            # intense blue): the log-fit is fitting black-floor noise.  The
+            # tightest honest lower bound comes from the THINNEST cell -- if even
+            # that reads ~black, a must exceed (ln T0 - ln T_thin)/t_thin.  Noise
+            # only ADDS light, so measured T over-estimates true T -> this is a
+            # valid lower bound.  Flag it; the exact value is unmeasurable.
+            i0 = int(np.argmin(t_all))
+            t_thin = max(float(t_all[i0]), 1e-6)
+            T_thin = min(max(float(T_all[i0]), 5e-3), 0.15)
+            a_lb = (np.log(0.9) - np.log(T_thin)) / t_thin
             return {"a": float(a_lb), "b": float(np.log(0.9)), "T0": 0.9,
                     "r2": 0.0, "n": int(len(t)), "floored": True}
         # else: channel barely absorbs (a wobbled slightly negative on noise) ->
