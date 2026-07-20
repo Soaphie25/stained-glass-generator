@@ -365,9 +365,7 @@ def _cluster_colors(colw, k, SR):
 def map_recipes(frag_dir, cal_root, thickness=1.6, max_delta=20.0,
                 num_colors=None, max_size_mm=None, filaments=None):
     """Read fragments and map each pane colour to the nearest printable recipe."""
-    SR, pool, sigma, pair_sigma, cands2 = _lut(cal_root, thickness, 2, filaments)
-    cands3 = SR.sublayer_candidates(pool, sigma, pair_sigma, thickness, thickness,
-                                    thickness, 3)
+    SR, pool, sigma, pair_sigma, cands3 = _lut(cal_root, thickness, 3, filaments)
     frags = sorted(glob.glob(os.path.join(frag_dir, "color_*.svg")))
     if not frags:
         raise SystemExit("no color_*.svg fragments in %s" % frag_dir)
@@ -389,14 +387,10 @@ def map_recipes(frag_dir, cal_root, thickness=1.6, max_delta=20.0,
                                   num_colors, SR)
 
     def recipe(hexc):
-        rec = SR.solve_target_sublayer(hexc, pool, sigma, pair_sigma,
-                                       cands=cands2)["recommended"]
-        if rec["delta_e"] > max_delta:               # allow a 3-mix as last resort
-            r3 = SR.solve_target_sublayer(hexc, pool, sigma, pair_sigma,
-                                          cands=cands3)["recommended"]
-            if r3["delta_e"] < rec["delta_e"] - 0.5:
-                rec = r3
-        return rec
+        # tiered by filament count, gated by max_delta: use the fewest filaments
+        # already within max_delta (a good-enough single beats any mix), else best.
+        return SR.solve_target_sublayer(hexc, pool, sigma, pair_sigma,
+                                        cands=cands3, max_delta=max_delta)["recommended"]
     rec_cache = {t: recipe(t) for t in set(targets.values())}
     return {"SR": SR, "pool": pool, "items": items, "rec_cache": rec_cache,
             "targets": targets, "W": W, "H": H, "scale": scale,

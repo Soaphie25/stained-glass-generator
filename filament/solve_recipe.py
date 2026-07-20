@@ -376,7 +376,7 @@ def sublayer_candidates(pool, sigma, pair_sigma=None, tmin=0.4, tmax=3.0,
 
 def solve_target_sublayer(target_hex, pool, sigma, pair_sigma=None, ratio_step=0.05,
                           tmin=0.4, tmax=3.0, layer=0.2, max_filaments=2,
-                          tol_de=1.5, cands=None):
+                          tol_de=1.5, cands=None, max_delta=None):
     """Best sub-layer recipe for one target.  Pass a precomputed ``cands`` (from
     sublayer_candidates) to reuse the LUT across many targets."""
     target_lin = hex_to_linear(target_hex)
@@ -391,9 +391,22 @@ def solve_target_sublayer(target_hex, pool, sigma, pair_sigma=None, ratio_step=0
     if not scored:
         return {"target_hex": target_hex.lower(), "delta_e": None}
     scored.sort(key=lambda c: c["delta_e"])
-    best_de = scored[0]["delta_e"]
-    near = [c for c in scored if c["delta_e"] <= best_de + tol_de]
-    chosen = min(near, key=lambda c: (c["n"], c["delta_e"]))    # prefer simpler
+    if max_delta is not None:
+        # tiered: use the FEWEST filaments whose best match is already within
+        # max_delta (a good-enough single beats any mix); else the overall best.
+        chosen = None
+        for n in sorted({c["n"] for c in scored}):
+            best_n = min((c for c in scored if c["n"] == n),
+                         key=lambda c: c["delta_e"])
+            if best_n["delta_e"] <= max_delta:
+                chosen = best_n
+                break
+        if chosen is None:
+            chosen = scored[0]
+    else:
+        best_de = scored[0]["delta_e"]
+        near = [c for c in scored if c["delta_e"] <= best_de + tol_de]
+        chosen = min(near, key=lambda c: (c["n"], c["delta_e"]))  # prefer simpler
     single = min((c for c in scored if c["n"] == 1),
                  key=lambda c: c["delta_e"], default=None)
     return {"target_hex": target_hex.lower(), "recommended": chosen,
