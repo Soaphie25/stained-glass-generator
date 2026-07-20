@@ -51,6 +51,8 @@ import json
 import os
 import re
 import sys
+from fractions import Fraction
+from math import gcd
 
 import numpy as np
 from PIL import Image, ImageDraw
@@ -261,6 +263,33 @@ def load_sigma(paths):
     return sigma, pair_sigma
 
 
+def printable_ratios(base=10, nice_denoms=(3, 4)):
+    """Ratios a slicer can actually build as integer sub-layer counts: multiples
+    of 1/base (10% steps) PLUS simple fractions (1/3, 2/3, 1/4, 3/4).  A printer
+    can't interleave an arbitrary 11% or 57%, but 1/3 = 1:2 sub-layers is clean."""
+    rs = {round(i / base, 4) for i in range(base + 1)}
+    for dn in nice_denoms:
+        rs.update(round(k / dn, 4) for k in range(dn + 1))
+    return sorted(rs)
+
+
+PRINTABLE_RATIOS = printable_ratios()          # {0,.1,.2,.25,.3,.333,.4,.5,...,1}
+
+
+def sublayer_counts(fracs, max_denom=10):
+    """Smallest integer sub-layer counts realizing `fracs` (e.g. [0.667,0.333] ->
+    [2,1], [0.3,0.7] -> [3,7]).  This is what the slicer actually interleaves."""
+    frs = [Fraction(f).limit_denominator(max_denom) for f in fracs]
+    L = 1
+    for fr in frs:
+        L = L * fr.denominator // gcd(L, fr.denominator)
+    counts = [int(fr * L) for fr in frs]
+    g = 0
+    for c in counts:
+        g = gcd(g, c)
+    return [c // g for c in counts] if g > 1 else counts
+
+
 def _pair_sigmas(A, B, sigma, pair_sigma):
     """(sigma_A, sigma_B, source) for a filament pair -- the pair's OWN direct fit
     if it was calibrated (posterior), else the generalized per-filament sigma."""
@@ -286,7 +315,7 @@ def solve_target_sublayer(target_hex, pool, sigma, pair_sigma=None, ratio_step=0
     interleaved at a ratio, over a total thickness.  Returns a recipe dict."""
     target_lin = hex_to_linear(target_hex)
     thicks = np.round(np.arange(tmin, tmax + 1e-9, layer), 3)
-    ratios = np.round(np.arange(ratio_step, 1.0 - 1e-9, ratio_step), 3)
+    ratios = [r for r in PRINTABLE_RATIOS if 0 < r < 1]   # slicer-buildable only
     cands = []
 
     def add(lin, rec):
@@ -310,10 +339,12 @@ def solve_target_sublayer(target_hex, pool, sigma, pair_sigma=None, ratio_step=0
         for p in ratios:                                 # p = fraction of B
             if p > B.max_frac + 1e-9 or (1 - p) > A.max_frac + 1e-9:
                 continue                                 # intense-filament cap
+            counts = sublayer_counts([1 - p, p])
             for T in thicks:
                 add(predict_mix_linear([A, B], [sA, sB], [1 - p, p], T),
                     {"n": 2, "filaments": [A.name, B.name],
                      "fracs_pct": [round((1 - p) * 100), round(p * 100)],
+                     "sublayer_ratio": ":".join(map(str, counts)),
                      "thickness_mm": float(T), "has_sigma": have,
                      "sigma_source": src})
 
@@ -331,11 +362,13 @@ def solve_target_sublayer(target_hex, pool, sigma, pair_sigma=None, ratio_step=0
                     if (fa > mods[0].max_frac + 1e-9 or fb > mods[1].max_frac + 1e-9
                             or fc > mods[2].max_frac + 1e-9):
                         continue                         # intense-filament cap
+                    counts = sublayer_counts([fa, fb, fc])
                     for T in thicks:
                         add(predict_mix_linear(mods, sgs, [fa, fb, fc], T),
                             {"n": 3, "filaments": [m.name for m in mods],
                              "fracs_pct": [round(fa * 100), round(fb * 100),
                                            round(fc * 100)],
+                             "sublayer_ratio": ":".join(map(str, counts)),
                              "thickness_mm": float(T), "has_sigma": have})
 
     if not cands:
@@ -351,8 +384,11 @@ def solve_target_sublayer(target_hex, pool, sigma, pair_sigma=None, ratio_step=0
 
 
 def _fmt_mix(rec):
-    return " / ".join("%s %d%%" % (n, f)
-                      for n, f in zip(rec["filaments"], rec["fracs_pct"]))
+    s = " / ".join("%s %d%%" % (n, f)
+                   for n, f in zip(rec["filaments"], rec["fracs_pct"]))
+    if rec.get("sublayer_ratio"):
+        s += "  [%s sublayers]" % rec["sublayer_ratio"]
+    return s
 
 
 def print_table_sublayer(recipes):

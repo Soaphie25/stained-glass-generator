@@ -140,6 +140,13 @@ minority it participates, as a majority it swamps the other colours *and* its
 generalized-σ prediction degrades (red–blue: blue≤40% ΔE 7.5 vs blue>40% ΔE 13.4).
 The sub-layer solver enforces the cap automatically for mixes (pure panes are fine).
 
+**Printable ratios only.** A slicer interleaves whole sub-layers, so it can't build
+an arbitrary 11% or 57%. The solver searches a LUT of buildable ratios — tenths plus
+simple fractions (`0,10,20,25,30,33,40,50,60,67,70,75,80,90,100`%) — and reports
+each mix as its integer **sub-layer count** (e.g. `blue 20% / red 80% [1:4]`, `2:1`
+for two-thirds). An intense filament's cap trims this further (blue ≤35% → only
+10/20/25/30/33% remain), so the whole recipe space is a small, printable set.
+
 ## Sub-layer colour mixing (experimental, Bambu Studio Color Mixing)
 
 An alternative to stacking whole-layer blocks: within one solid part, Bambu Studio
