@@ -56,9 +56,11 @@ def do_lutstatus(data):
 
 # allowed SVG-generator options (key -> --key), passed through from the browser
 _SVG_OPTS = ("max-size-mm", "px-mm", "num-colors", "black-block-mm",
-             "line-width", "line-width-scale", "lum-threshold", "alpha-min",
-             "fit-tolerance", "simplify-tolerance", "smooth-tolerance",
-             "min-fragment-area", "color-merge-tol", "min-line-width")
+             "line-width", "line-width-scale", "tier-thin", "tier-bold",
+             "lum-threshold", "alpha-min", "fit-tolerance", "simplify-tolerance",
+             "smooth-tolerance", "min-fragment-area", "color-merge-tol",
+             "min-line-width")
+_SVG_FLAGS = ("smooth-curves", "merge-leading")
 
 
 def do_convert(data):
@@ -79,6 +81,9 @@ def do_convert(data):
         v = (data.get("svg") or {}).get(k)
         if v not in (None, "", "auto-default"):
             args += ["--" + k, str(v)]
+    for k in _SVG_FLAGS:                              # boolean flags (no value)
+        if (data.get("flags") or {}).get(k):
+            args += ["--" + k]
     rc, out, err = sh(args)
     if rc != 0:
         return {"ok": False, "cmd": " ".join(args), "stderr": err or out}
@@ -199,14 +204,20 @@ PAGE = r"""<!doctype html><html><head><meta charset=utf-8>
 <fieldset><legend>② Image → panes&nbsp;·&nbsp;图片 → 玻璃块</legend>
  <div class=row><input type=file id=img accept="image/*"></div>
  <div class=row>size 尺寸(最长边) <input type=number id=o_size value=200 style="width:70px"> mm
-   &nbsp; colours 颜色数 <input type=number id=o_colors placeholder="all 全部" style="width:70px">
-   &nbsp; leading 铅线 <input type=text id=o_linewidth value="tier" style="width:70px"></div>
+   &nbsp; colours 颜色数 <input type=number id=o_colors placeholder="all 全部" style="width:70px"></div>
+ <div class=row>leading 铅线
+   <select id=o_leadmode onchange="leadUI()">
+     <option value="tier">tier 分级</option><option value="auto">auto 自动</option><option value="width">width= 固定宽度</option></select>
+   <span id=lead_tier>&nbsp; bold 粗 <input type=number id=o_tierbold value=0 step=0.1 style="width:55px"> thin 细 <input type=number id=o_tierthin value=0 step=0.1 style="width:55px"> mm <span style="color:#999;font-size:11px">(0 = auto 默认)</span></span>
+   <span id=lead_width style="display:none">&nbsp; <input type=number id=o_leadwidth value=1 step=0.1 style="width:55px"> mm</span></div>
  <details><summary>More options 更多选项</summary>
   <div class=row style="font-size:12px;color:#555">px-mm <input type=number id=o_pxmm value=0.4 step=0.1 style="width:60px">
    black-block-mm <input type=number id=o_blackblock value=3 step=0.5 style="width:60px">
    lum-threshold <input type=number id=o_lum value=90 style="width:60px">
    min-fragment-area <input type=number id=o_minfrag value=32 style="width:60px">
-   color-merge-tol <input type=number id=o_mergetol value=8 style="width:60px"></div>
+   color-merge-tol <input type=number id=o_mergetol value=8 style="width:60px">
+   &nbsp; <label><input type=checkbox id=o_smooth> smooth-curves 平滑曲线铅线</label>
+   <label><input type=checkbox id=o_mergelead> merge-leading 合并铅线</label></div>
  </details>
  <div class=row><button class=go onclick="convert()">Convert 转换</button> <span id=c_status></span></div>
 </fieldset>
@@ -229,9 +240,17 @@ function $(i){return document.getElementById(i);}
 function f2b64(f){return new Promise(r=>{const x=new FileReader();x.onload=()=>r({filename:f.name,b64:x.result});x.readAsDataURL(f);});}
 function img(p){return '<img class=prev src="/img?path='+encodeURIComponent(p)+'&t='+Date.now()+'">';}
 async function post(u,b){const r=await fetch(u,{method:'POST',body:JSON.stringify(b||{})});return r.json();}
-function svgOpts(){return {'max-size-mm':$('o_size').value,'num-colors':$('o_colors').value,
- 'line-width':$('o_linewidth').value,'px-mm':$('o_pxmm').value,'black-block-mm':$('o_blackblock').value,
- 'lum-threshold':$('o_lum').value,'min-fragment-area':$('o_minfrag').value,'color-merge-tol':$('o_mergetol').value};}
+function leadUI(){const m=$('o_leadmode').value;
+ $('lead_tier').style.display=(m==='tier')?'inline':'none';
+ $('lead_width').style.display=(m==='width')?'inline':'none';}
+function svgOpts(){const m=$('o_leadmode').value;
+ const o={'max-size-mm':$('o_size').value,'num-colors':$('o_colors').value,
+  'line-width':(m==='width'?$('o_leadwidth').value:m),'px-mm':$('o_pxmm').value,
+  'black-block-mm':$('o_blackblock').value,'lum-threshold':$('o_lum').value,
+  'min-fragment-area':$('o_minfrag').value,'color-merge-tol':$('o_mergetol').value};
+ if(m==='tier'){o['tier-bold']=$('o_tierbold').value;o['tier-thin']=$('o_tierthin').value;}
+ return o;}
+function svgFlags(){return {'smooth-curves':$('o_smooth').checked,'merge-leading':$('o_mergelead').checked};}
 let ALLFIL=[], SEL=[], SLOTS=4;
 function params(){return {depth:$('o_depth').value,size:$('o_size').value,colors:$('o_colors').value,max_delta:$('o_maxdelta').value,filaments:SEL};}
 async function lut(){const r=await post('/lutstatus',{});
@@ -252,7 +271,7 @@ async function genGamut(){$('gamut').innerHTML='<span style="color:#777">buildin
 async function convert(){const el=$('img');if(!el.files[0]){alert('pick an image 请选择图片');return;}
  $('c_status').textContent='vectorising… 矢量化中…';
  const image=await f2b64(el.files[0]);
- const r=await post('/convert',{image,svg:svgOpts()});$('c_status').textContent='';
+ const r=await post('/convert',{image,svg:svgOpts(),flags:svgFlags()});$('c_status').textContent='';
  if(!r.ok){$('c_status').innerHTML='<span style="color:#a33">'+(r.stderr||'').slice(-200)+'</span>';return;}
  $('c_status').innerHTML='<span style="color:#2a7">✓ '+(r.colors||[]).length+' colours 种颜色</span>';
  preview();}
