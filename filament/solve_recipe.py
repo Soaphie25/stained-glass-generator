@@ -582,6 +582,11 @@ def _load_pool(opts):
         for path in sorted(glob.glob(os.path.join(cal_dir, "*",
                                                   "calibration.json"))):
             pool.append(load_filament(os.path.basename(os.path.dirname(path)), path))
+    sel = getattr(opts, "filaments", None)           # restrict to a chosen subset
+    if sel:
+        want = [s.strip() for s in (sel.split(",") if isinstance(sel, str) else sel)]
+        order = {n: i for i, n in enumerate(want)}
+        pool = sorted((m for m in pool if m.name in order), key=lambda m: order[m.name])
     return pool
 
 
@@ -838,6 +843,8 @@ def main(argv=None):
     sv.add_argument("--cal-root", default=CAL_ROOT,
                     help="calibration root; auto-discovers <name>/calibration.json "
                          "+ mix/*/mixture_calibration.json (default %(default)s)")
+    sv.add_argument("--filaments",
+                    help="restrict to these filament names (comma-separated)")
     sv.add_argument("--targets", help="comma-separated target hex codes")
     sv.add_argument("--from-svg-dir",
                     help="read targets from color_NN_<hex> filenames in a folder")
@@ -876,6 +883,8 @@ def main(argv=None):
     mp.add_argument("--cal-dir", help="folder of <name>/calibration.json")
     mp.add_argument("--cal-root", default=CAL_ROOT,
                     help="calibration root (auto-discovers cals + mix sigmas)")
+    mp.add_argument("--filaments",
+                    help="restrict to these filament names (comma-separated)")
     mp.add_argument("--mixcal", action="append",
                     help="mixture_calibration.json (per-filament sigma); repeatable")
     mp.add_argument("--thicknesses", default="0.6,1.2,2.4",
@@ -888,6 +897,8 @@ def main(argv=None):
     lt.add_argument("--cal-dir", help="folder of <name>/calibration.json")
     lt.add_argument("--cal-root", default=CAL_ROOT,
                     help="calibration root (auto-discovers cals + mix sigmas)")
+    lt.add_argument("--filaments",
+                    help="restrict to these filament names (comma-separated)")
     lt.add_argument("--mixcal", action="append",
                     help="mixture_calibration.json (per-filament sigma); repeatable")
     lt.add_argument("--max-filaments", type=int, default=2,

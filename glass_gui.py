@@ -95,6 +95,18 @@ def _frag_colors(fragdir):
     return out
 
 
+def do_gamut(data):
+    os.makedirs(os.path.join(ROOT, WORK), exist_ok=True)
+    sel = data.get("filaments") or []
+    args = ["python3", "filament/solve_recipe.py", "lut", "--cal-root", CALROOT,
+            "--out-dir", WORK]
+    if sel:
+        args += ["--filaments", ",".join(sel)]
+    rc, out, err = sh(args)
+    return {"ok": rc == 0, "gamut": "%s/gamut.png" % WORK if rc == 0 else None,
+            "stderr": err, "selected": sel}
+
+
 def _map(data):
     import svg_to_3mf as V
     fragdir = os.path.join(WORK, "frag")
@@ -104,7 +116,8 @@ def _map(data):
                             num_colors=(int(data["colors"]) if data.get("colors")
                                         else None),
                             max_size_mm=(float(data["size"]) if data.get("size")
-                                         else None))
+                                         else None),
+                            filaments=(data.get("filaments") or None))
 
 
 def _table(m):
@@ -142,12 +155,13 @@ def do_gen3mf(data):
                  thickness=float(data.get("depth") or 1.6),
                  max_delta=float(data.get("max_delta") or 20),
                  num_colors=(int(data["colors"]) if data.get("colors") else None),
-                 max_size_mm=(float(data["size"]) if data.get("size") else None))
+                 max_size_mm=(float(data["size"]) if data.get("size") else None),
+                 filaments=(data.get("filaments") or None))
     return {"ok": True, "download": out, "image": os.path.join(WORK, "panel_preview.png"),
             "table": _table(m), "dims": [round(m["W"]), round(m["H"])]}
 
 
-POST = {"/lutstatus": do_lutstatus, "/convert": do_convert,
+POST = {"/lutstatus": do_lutstatus, "/gamut": do_gamut, "/convert": do_convert,
         "/preview": do_preview, "/gen3mf": do_gen3mf}
 
 
@@ -175,8 +189,9 @@ PAGE = r"""<!doctype html><html><head><meta charset=utf-8>
 <header>Stained-glass → 3MF&nbsp;&nbsp;·&nbsp;&nbsp;彩色玻璃 → 3MF</header>
 <div class=wrap>
 
-<fieldset><legend>① Palette / gamut&nbsp;·&nbsp;色板 / 色域</legend>
+<fieldset><legend>① Filaments &amp; gamut&nbsp;·&nbsp;耗材与色域</legend>
  <div id=lut>checking… 检查中…</div>
+ <div id=gamut style="margin-top:8px"></div>
 </fieldset>
 
 <fieldset><legend>② Image → panes&nbsp;·&nbsp;图片 → 玻璃块</legend>
@@ -215,11 +230,23 @@ async function post(u,b){const r=await fetch(u,{method:'POST',body:JSON.stringif
 function svgOpts(){return {'max-size-mm':$('o_size').value,'num-colors':$('o_colors').value,
  'line-width':$('o_linewidth').value,'px-mm':$('o_pxmm').value,'black-block-mm':$('o_blackblock').value,
  'lum-threshold':$('o_lum').value,'min-fragment-area':$('o_minfrag').value,'color-merge-tol':$('o_mergetol').value};}
-function params(){return {depth:$('o_depth').value,size:$('o_size').value,colors:$('o_colors').value,max_delta:$('o_maxdelta').value};}
-async function lut(){const r=await post('/lutstatus',{});let h='';
- if(!r.ready){h='<div class=warn><b>No calibrated filaments yet · 尚无已校准耗材</b><br>Calibrate filaments first in the filament GUI: run <code>python3 filament/gui.py</code> · 请先用耗材 GUI 校准：运行 <code>python3 filament/gui.py</code></div>';}
- else{h='<div class=ok>'+r.n+' filament(s) 已校准: '+r.filaments.join(', ')+'</div>';if(r.gamut)h+=img(r.gamut);}
+let ALLFIL=[], SEL=[], SLOTS=4;
+function params(){return {depth:$('o_depth').value,size:$('o_size').value,colors:$('o_colors').value,max_delta:$('o_maxdelta').value,filaments:SEL};}
+async function lut(){const r=await post('/lutstatus',{});
+ if(!r.ready){$('lut').innerHTML='<div class=warn><b>No calibrated filaments yet · 尚无已校准耗材</b><br>Calibrate filaments first: run <code>python3 filament/gui.py</code> · 请先用耗材 GUI 校准：运行 <code>python3 filament/gui.py</code></div>';return;}
+ ALLFIL=r.filaments; if(SEL.length===0)SEL=ALLFIL.slice(0,Math.min(SLOTS,ALLFIL.length));
+ renderFil(); genGamut();}
+function renderFil(){
+ let h='<div style="color:#555;font-size:12px;margin-bottom:4px">Select the filaments loaded in your AMS (max '+SLOTS+' slots) · 勾选 AMS 中已装载的耗材（最多 '+SLOTS+' 槽）</div>';
+ ALLFIL.forEach(f=>{const on=SEL.includes(f);const dis=(!on&&SEL.length>=SLOTS);
+   h+='<label style="margin-right:16px;color:'+(dis?'#bbb':'#222')+'"><input type=checkbox '+(on?'checked':'')+(dis?' disabled':'')+' onchange="togg(\''+f+'\')"> '+f+'</label>';});
+ h+=' &nbsp;<button onclick="addAms()">+ Filament 加耗材</button> &nbsp;<span style="color:#777;font-size:12px">'+SEL.length+'/'+SLOTS+' slots 槽</span>';
  $('lut').innerHTML=h;}
+function togg(f){const i=SEL.indexOf(f);if(i>=0)SEL.splice(i,1);else if(SEL.length<SLOTS)SEL.push(f);renderFil();genGamut();}
+function addAms(){SLOTS=Math.min(8,SLOTS+4);renderFil();}
+async function genGamut(){$('gamut').innerHTML='<span style="color:#777">building gamut… 生成色域…</span>';
+ const r=await post('/gamut',{filaments:SEL});
+ $('gamut').innerHTML=r.gamut?('<div style="color:#555;font-size:12px">reachable gamut with ['+SEL.join(', ')+'] · 可达色域</div>'+img(r.gamut)):('<div class=warn>'+(r.stderr||'')+'</div>');}
 async function convert(){const el=$('img');if(!el.files[0]){alert('pick an image 请选择图片');return;}
  $('c_status').textContent='vectorising… 矢量化中…';
  const image=await f2b64(el.files[0]);

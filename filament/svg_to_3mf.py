@@ -309,7 +309,7 @@ def extrude(rings, z0, z1, flip_h=None):
 # --------------------------------------------------------------------------- #
 # Colour mapping (LUT) + Bambu colour-mix 3MF assembly
 # --------------------------------------------------------------------------- #
-def _lut(cal_root, thickness, max_filaments):
+def _lut(cal_root, thickness, max_filaments, filaments=None):
     import solve_recipe as SR
 
     class O:
@@ -317,6 +317,7 @@ def _lut(cal_root, thickness, max_filaments):
     o = O()
     o.cal = o.cal_dir = o.mixcal = None
     o.cal_root = cal_root
+    o.filaments = filaments                           # restrict to a chosen subset
     SR._discover_mixcals(o)
     pool = SR._load_pool(o)
     if not pool:
@@ -362,9 +363,9 @@ def _cluster_colors(colw, k, SR):
 
 
 def map_recipes(frag_dir, cal_root, thickness=1.6, max_delta=20.0,
-                num_colors=None, max_size_mm=None):
+                num_colors=None, max_size_mm=None, filaments=None):
     """Read fragments and map each pane colour to the nearest printable recipe."""
-    SR, pool, sigma, pair_sigma, cands2 = _lut(cal_root, thickness, 2)
+    SR, pool, sigma, pair_sigma, cands2 = _lut(cal_root, thickness, 2, filaments)
     cands3 = SR.sublayer_candidates(pool, sigma, pair_sigma, thickness, thickness,
                                     thickness, 3)
     frags = sorted(glob.glob(os.path.join(frag_dir, "color_*.svg")))
@@ -443,9 +444,10 @@ def _print_table(m):
 
 
 def build_3mf(frag_dir, cal_root, out_path, thickness=1.6, max_delta=20.0,
-              num_colors=None, bed_mm=256.0, max_size_mm=None):
+              num_colors=None, bed_mm=256.0, max_size_mm=None, filaments=None):
     from bambu_mix3mf import write_bambu_color_mix_3mf, default_template
-    m = map_recipes(frag_dir, cal_root, thickness, max_delta, num_colors, max_size_mm)
+    m = map_recipes(frag_dir, cal_root, thickness, max_delta, num_colors,
+                    max_size_mm, filaments)
     SR, pool, items = m["SR"], m["pool"], m["items"]
     names, H, scale = m["names"], m["H"], m["scale"]
     rec_cache, targets = m["rec_cache"], m["targets"]
@@ -538,12 +540,16 @@ def main(argv=None):
                    help="reduce the palette to this many recipes (default: all)")
     p.add_argument("--max-size-mm", type=float,
                    help="scale the panel so its longest side is this (keep aspect)")
+    p.add_argument("--filaments",
+                   help="restrict to these filament names (comma-separated); the "
+                        "gamut is built from just these (e.g. your loaded AMS slots)")
     p.add_argument("--selftest", action="store_true", help="geometry self-test")
     opts = p.parse_args(argv)
     if opts.selftest or not opts.frag_dir:
         return _selftest()
     return build_3mf(opts.frag_dir, opts.cal_root, opts.out, opts.thickness,
-                     opts.max_delta, opts.num_colors, max_size_mm=opts.max_size_mm)
+                     opts.max_delta, opts.num_colors, max_size_mm=opts.max_size_mm,
+                     filaments=opts.filaments)
 
 
 if __name__ == "__main__":
