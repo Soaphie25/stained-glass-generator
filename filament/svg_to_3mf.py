@@ -284,6 +284,135 @@ def extrude(rings, z0, z1, flip_h=None):
     return verts, tris
 
 
+# --------------------------------------------------------------------------- #
+# Colour mapping (LUT) + Bambu colour-mix 3MF assembly
+# --------------------------------------------------------------------------- #
+def _lut(cal_root, thickness, max_filaments):
+    import solve_recipe as SR
+
+    class O:
+        pass
+    o = O()
+    o.cal = o.cal_dir = o.mixcal = None
+    o.cal_root = cal_root
+    SR._discover_mixcals(o)
+    pool = SR._load_pool(o)
+    if not pool:
+        raise SystemExit("no calibrations under %s (calibrate some filaments first)"
+                         % cal_root)
+    sigma, pair_sigma = SR.load_sigma(o.mixcal)
+    cands = SR.sublayer_candidates(pool, sigma, pair_sigma, thickness, thickness,
+                                   thickness, max_filaments)
+    return SR, pool, sigma, pair_sigma, cands
+
+
+def _corner_boxes(path, height_mm, z0, z1):
+    """The 4 registration squares (SVG <rect>) as black marker boxes (y-flipped)."""
+    txt = open(path).read()
+    boxes = []
+    for m in re.finditer(r'<rect\s+x="([-\d.]+)"\s+y="([-\d.]+)"\s+width='
+                         r'"([-\d.]+)"\s+height="([-\d.]+)"', txt):
+        x, y, w, h = map(float, m.groups())
+        boxes.append((x, height_mm - (y + h), z0, x + w, height_mm - y, z1))
+    return boxes
+
+
+def _cluster_colors(colw, k, SR):
+    """area-weighted k-means over Lab -> {orig_hex: representative_hex}."""
+    labs = np.array([SR.linear_to_lab(SR.hex_to_linear(h)) for h, _ in colw])
+    wts = np.array([max(w, 1.0) for _, w in colw])
+    seeds = labs[np.argsort(-wts)[:k]].copy()
+    lab_id = np.zeros(len(colw), int)
+    for _ in range(25):
+        d = ((labs[:, None, :] - seeds[None, :, :]) ** 2).sum(2)
+        lab_id = d.argmin(1)
+        for j in range(k):
+            m = lab_id == j
+            if m.any():
+                seeds[j] = (labs[m] * wts[m, None]).sum(0) / wts[m].sum()
+    out = {}
+    for i, (h, _) in enumerate(colw):
+        j = lab_id[i]
+        member = min((ii for ii in range(len(colw)) if lab_id[ii] == j),
+                     key=lambda ii: ((labs[ii] - seeds[j]) ** 2).sum())
+        out[h] = colw[member][0]
+    return out
+
+
+def build_3mf(frag_dir, cal_root, out_path, thickness=1.6, max_delta=20.0,
+              num_colors=None, bed_mm=256.0):
+    from bambu_mix3mf import write_bambu_color_mix_3mf, default_template
+    SR, pool, sigma, pair_sigma, cands2 = _lut(cal_root, thickness, 2)
+    cands3 = SR.sublayer_candidates(pool, sigma, pair_sigma, thickness, thickness,
+                                    thickness, 3)
+    names = [m.name for m in pool]
+    slot_of = {n: i + 1 for i, n in enumerate(names)}
+    black_slot = len(names) + 1
+
+    frags = sorted(glob.glob(os.path.join(frag_dir, "color_*.svg")))
+    if not frags:
+        raise SystemExit("no color_*.svg fragments in %s" % frag_dir)
+    items = []
+    for f in frags:
+        w, h, hexc, rings = read_fragment(f)
+        items.append({"file": f, "w": w, "h": h, "hex": hexc, "rings": rings,
+                      "area": sum(abs(_ring_area(r)) for r in rings)})
+    W, H = items[0]["w"], items[0]["h"]
+
+    targets = {it["hex"]: it["hex"] for it in items}
+    if num_colors and num_colors < len(items):
+        targets = _cluster_colors([(it["hex"], it["area"]) for it in items],
+                                  num_colors, SR)
+
+    def recipe(hexc):
+        rec = SR.solve_target_sublayer(hexc, pool, sigma, pair_sigma,
+                                       cands=cands2)["recommended"]
+        if rec["delta_e"] > max_delta:               # allow a 3-mix as last resort
+            r3 = SR.solve_target_sublayer(hexc, pool, sigma, pair_sigma,
+                                          cands=cands3)["recommended"]
+            if r3["delta_e"] < rec["delta_e"] - 0.5:
+                rec = r3
+        return rec
+    rec_cache = {t: recipe(t) for t in set(targets.values())}
+
+    parts, rows = [], []
+    for it in items:
+        rec = rec_cache[targets[it["hex"]]]
+        v, t = extrude(it["rings"], 0.0, thickness, flip_h=H)
+        if not t:
+            continue
+        part = {"name": "c_%s" % it["hex"], "mesh": (v, t)}
+        if rec["n"] == 1:
+            part["slot"] = slot_of[rec["filaments"][0]]
+        else:
+            part["mix"] = {"components": [slot_of[n] for n in rec["filaments"]],
+                           "ratios": [f / 100.0 for f in rec["fracs_pct"]],
+                           "colour": "#" + rec["predicted_hex"]}
+        parts.append(part)
+        rows.append((it["hex"], rec, it["area"]))
+    cb = _corner_boxes(items[0]["file"], H, 0.0, thickness)
+    if cb:
+        parts.append({"name": "markers", "boxes": cb, "slot": black_slot})
+
+    bases = [{"colour": "#" + SR.linear_to_hex(SR.predict_linear([m], [thickness]))}
+             for m in pool] + [{"colour": "#111111"}]
+    write_bambu_color_mix_3mf(out_path, default_template(), bases, parts, bed_mm)
+
+    print("\npanel %dx%d mm @ %.1f mm  ->  %s" % (W, H, thickness, out_path))
+    print("filaments: %s + black" % ", ".join(names))
+    print("\n%-9s %6s  %-28s %5s" % ("colour", "area", "recipe", "dE"))
+    print("-" * 56)
+    for hexc, rec, area in sorted(rows, key=lambda r: -r[2]):
+        mix = " / ".join("%s %d%%" % (n, f)
+                         for n, f in zip(rec["filaments"], rec["fracs_pct"]))
+        flag = "  << out of gamut" if rec["delta_e"] > max_delta else ""
+        print("#%-8s %6.0f  %-28s %5.1f%s" % (hexc, area, mix, rec["delta_e"], flag))
+    ngam = sum(1 for _, rec, _ in rows if rec["delta_e"] > max_delta)
+    print("\n%d panes, %d out of gamut (dE>%.0f -- add the missing filament)"
+          % (len(rows), ngam, max_delta))
+    return 0
+
+
 def _tri_area(verts, tris, zpick):
     a = 0.0
     for (i, j, k) in tris:
@@ -329,11 +458,21 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--frag-dir", help="folder of color_NN_<hex>.svg fragments")
-    p.add_argument("--selftest", action="store_true")
+    p.add_argument("--cal-root", default="filament/calibration",
+                   help="calibration root (the LUT source)")
+    p.add_argument("--out", default="panel.3mf", help="output Bambu 3MF")
+    p.add_argument("--thickness", type=float, default=1.6,
+                   help="panel thickness mm (flat; colour via sub-layer mix)")
+    p.add_argument("--max-delta", type=float, default=20.0,
+                   help="allow a 3-filament mix only if 2-mix exceeds this dE")
+    p.add_argument("--num-colors", type=int,
+                   help="reduce the palette to this many recipes (default: all)")
+    p.add_argument("--selftest", action="store_true", help="geometry self-test")
     opts = p.parse_args(argv)
     if opts.selftest or not opts.frag_dir:
         return _selftest()
-    return 0
+    return build_3mf(opts.frag_dir, opts.cal_root, opts.out, opts.thickness,
+                     opts.max_delta, opts.num_colors)
 
 
 if __name__ == "__main__":
