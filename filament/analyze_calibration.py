@@ -134,6 +134,16 @@ def _quad_area(p):
                          for i in range(4)))
 
 
+def _quad_aspect(pts):
+    """short/long side ratio (0..1) of a 4-point quad given in any order."""
+    p = np.asarray(pts, float)
+    c = p.mean(0)
+    r = p[np.argsort(np.arctan2(p[:, 1] - c[1], p[:, 0] - c[0]))]
+    s = [np.hypot(*(r[i] - r[(i + 1) % 4])) for i in range(4)]
+    wd, ht = (s[0] + s[2]) / 2, (s[1] + s[3]) / 2
+    return float(min(wd, ht) / max(wd, ht, 1e-6))
+
+
 def detect_markers(rgb, dark_frac=0.10):
     """Find the 4 corner markers + orientation dot in an HxWx3 uint8 image.
 
@@ -493,6 +503,14 @@ def _quality_warnings(screens):
     """Flag suspicious shots with actionable re-shoot tips."""
     out = []
     for s, d in screens.items():
+        da, ea = d.get("marker_aspect"), d.get("expected_aspect")
+        if da and ea and abs(da - ea) / ea > 0.02:
+            out.append("[%s] PAD MISMATCH: detected marker-rectangle aspect %.3f "
+                       "vs layout %.3f -- this pad does not match --layout (wrong "
+                       "pad version?) or is badly tilted. Cells sample the wrong "
+                       "spots, so absorption is bogus. Reprint from the current "
+                       "make_calibration_pad.py, or pass the matching layout, or "
+                       "reshoot flat + square-on." % (s, da, ea))
         mr, clip = d.get("max_ref", 1.0), d.get("clip_frac", 0.0)
         if mr < 0.25:
             out.append("[%s] UNDER-EXPOSED: brightest reference is only %.0f%% of "
@@ -613,6 +631,10 @@ def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10
     cell_wh = np.array([[c["w"], c["h"]] for c in cells], float)
     win = layout["reference_windows"]
     win_xy = np.array([[w["cx"], w["cy"]] for w in win], float)
+    _reg = layout["register_markers"]["corners"]
+    exp_aspect = _quad_aspect([[_reg[n]["cx"], _reg[n]["cy"]] for n in
+                               ("top_left", "top_right", "bottom_right",
+                                "bottom_left")])
 
     screens = {}
     samples = []
@@ -672,6 +694,9 @@ def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10
                            for c in corners],
             "max_ref": round(max_ref, 3),
             "clip_frac": round(clip_frac, 3),
+            "marker_aspect": round(_quad_aspect(
+                [[c["cx"], c["cy"]] for c in corners]), 4),
+            "expected_aspect": round(exp_aspect, 4),
         }
         if diag_dir is not None:
             _draw_diag(rgb, H, cells, win, corners, None,
