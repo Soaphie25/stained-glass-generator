@@ -448,7 +448,7 @@ async function pickMarkers(ctx,fileId,areaId){const el=document.getElementById(f
  const st={MK:[],orig:r.orig,disp:r.disp,img:null};MKC[ctx]=st;
  const cid='mkc_'+ctx,iid='mki_'+ctx;
  document.getElementById(areaId).innerHTML='<div class=info>Click the 4 black corner markers (any order) · 点击 4 个黑色角标（顺序任意）</div>'+
-  '<canvas id="'+cid+'" style="border:1px solid #ccc;max-width:100%;cursor:crosshair"></canvas> <button onclick="clearMk(\''+ctx+'\')">clear 清除</button> <span id="'+iid+'" style="color:#555"></span>';
+  '<canvas id="'+cid+'" style="border:1px solid #ccc;max-width:100%;cursor:crosshair"></canvas> <button onclick="clearMk(&quot;'+ctx+'&quot;)">clear 清除</button> <span id="'+iid+'" style="color:#555"></span>';
  const c=document.getElementById(cid),im=new Image();
  im.onload=()=>{c.width=im.width;c.height=im.height;st.img=im;c.getContext('2d').drawImage(im,0,0);
   c.onclick=(e)=>{const b=c.getBoundingClientRect();const x=(e.clientX-b.left)*c.width/b.width,y=(e.clientY-b.top)*c.height/b.height;
