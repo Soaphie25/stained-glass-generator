@@ -165,6 +165,8 @@ PAGE = """<!doctype html><html><head><meta charset=utf-8>
  .cmd{font-family:ui-monospace,monospace;font-size:12px;background:#20242e;color:#b7c6ea;padding:8px 10px;border-radius:6px;overflow-x:auto;white-space:pre-wrap}
  pre.out{font-family:ui-monospace,monospace;font-size:12px;background:#fafafc;border:1px solid #eee;padding:8px 10px;border-radius:6px;overflow-x:auto}
  .warn{background:#fdeaea;border:1px solid #e8a1a1;color:#8a1f1f;border-radius:8px;padding:8px 12px;margin:8px 0}
+ .info{background:#eef3fb;border:1px solid #b8cdec;color:#274a7a;border-radius:8px;padding:8px 12px;margin:8px 0}
+ .done{background:#e7f6ec;border:1px solid #94cea9;color:#1c5c30;font-weight:600;border-radius:8px;padding:9px 12px;margin:8px 0}
  .ok{background:#eaf7ee;border:1px solid #a7d8b6;color:#1c5c30;border-radius:8px;padding:8px 12px;margin:8px 0}
  .chips span{display:inline-block;padding:4px 8px;margin:3px;border-radius:6px;font-size:12px}
  .exp-ok{background:#e5f5ea;color:#1c5c30}.exp-bad{background:#fdeaea;color:#8a1f1f}
@@ -229,6 +231,7 @@ async function analyze(){
  if(res.cmd)document.getElementById('c_cmd').innerHTML='<div class=cmd>'+res.cmd+'</div>';
  let h='';
  if(!res.ok){h+='<div class=warn><b>failed 失败:</b><br><pre class=out>'+(res.stderr||'')+'</pre></div>';}
+ else if(res.primary){h+='<div class=done>✓ calibrated · 校准成功 &nbsp;→ filament/calibration/'+(document.getElementById('c_name').value||'filament')+'/</div>';}
  const rel=res.reliability;
  if(res.primary){h+='<div class=ok><b>absorption /mm · 吸收系数</b> &nbsp; R '+res.primary.R+' &nbsp; G '+res.primary.G+' &nbsp; B '+res.primary.B+'</div>';}
  if(rel){const CLS={'intense':'INTENSE 强吸收','normal-transparent':'normal 普通透明'};
@@ -242,8 +245,13 @@ async function analyze(){
      if(d.marker_aspect&&d.expected_aspect&&Math.abs(d.marker_aspect-d.expected_aspect)/d.expected_aspect>0.02){bad+=' PAD-MISMATCH 板不匹配';cls='exp-bad';}
      h+='<span class="'+cls+'">'+s+' '+Math.round((d.max_ref||0)*100)+'%'+(bad||' ✓')+'</span>';}
    h+='</div>';}
- if(res.warnings&&res.warnings.length){h+='<div class=warn><b>shot-quality problems 拍摄问题:</b><ul>';
-   res.warnings.forEach(w=>{const g=cnGloss(w);h+='<li>'+w+(g?'<br><span style="color:#a33">〔'+g+'〕</span>':'')+'</li>';});h+='</ul></div>';}
+ // split EXPECTED skips (colour screen washed out -> ignored, fine) from real problems
+ const ws=res.warnings||[],skips=ws.filter(w=>/SKIPPED/i.test(w)),probs=ws.filter(w=>!/SKIPPED/i.test(w));
+ if(skips.length){h+='<div class=info><b>skipped shots (expected, ignored) · 已跳过的照片（正常，可忽略）:</b><ul>';
+   skips.forEach(w=>{const g=cnGloss(w);h+='<li>'+w.replace(/SKIPPED.*?:/,'skipped:')+(g?'<br><span style="color:#456">〔'+g+'〕</span>':'')+'</li>';});
+   h+='</ul>A colour screen can\\'t be read when the filament passes/blocks that colour — the white shot covers it.<br>当耗材透过/挡住该颜色时其背光无法读取标记，白屏已足够。</div>';}
+ if(probs.length){h+='<div class=warn><b>shot-quality problems 拍摄问题:</b><ul>';
+   probs.forEach(w=>{const g=cnGloss(w);h+='<li>'+w+(g?'<br><span style="color:#a33">〔'+g+'〕</span>':'')+'</li>';});h+='</ul></div>';}
  if(res.images)res.images.forEach(p=>h+=img(p));
  document.getElementById('c_result').innerHTML=h;
 }
