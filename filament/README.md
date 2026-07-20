@@ -37,9 +37,23 @@ reads it.
 ### 2. Photograph the printed pad
 
 Lay the pad on a phone/tablet showing a **full-screen solid colour** (the screen
-is both the backlight and a programmable RGB source). Take one photo over each of
-**white, red, green, blue** → 4 photos per filament. The single-colour screens
-isolate one channel each; white calibrates all three.
+is both the backlight and a programmable RGB source).
+
+**How many shots?** `analyze` classifies each filament and prints the exact
+**capture requirements**:
+- **Normal transparent filament** → **one white shot is enough.** White carries
+  all three channels and each fits cleanly.
+- **Intense filament** (absorbs a channel so hard that white blacks it out — e.g.
+  a deep blue kills red) → the report says *which extra single-colour screens to
+  shoot* (e.g. "WHITE + RED + GREEN"). Over a full-brightness single-colour screen
+  you can over-expose that one channel without clipping the others, turning a
+  floored/noisy channel into a real fit. A channel that stays black even on its own
+  screen is genuinely opaque there — its absorption is reported as a lower bound
+  (fine: it reads ~0 in any mix).
+
+The report also states the **exposure requirement**: the bare screen (reference
+windows) must read **~85–95 %** of full — bright but not clipped — and flags yours
+as OK / TOO DIM / TOO BRIGHT.
 
 Display the bundled standard primaries `filament/screens/{white,red,green,blue}.png`
 (pure sRGB #FFFFFF/#FF0000/#00FF00/#0000FF; regenerate at your screen's resolution

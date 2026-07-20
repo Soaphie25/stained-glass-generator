@@ -512,6 +512,78 @@ def _quality_warnings(screens):
     return out
 
 
+def _reliability(cal):
+    """Classify the filament (normal vs intense) and spell out the CAPTURE
+    REQUIREMENTS: which screen colours are needed, and the exposure target.
+
+    A NORMAL transparent filament is readable from one white shot -- white carries
+    all three channels and each fits cleanly.  An INTENSE filament absorbs one or
+    more channels so hard that white can't expose them (they floor to black or fit
+    noisily); those channels need their OWN full-brightness primary screen, where
+    that channel can be over-exposed without clipping the others.
+    """
+    screens = cal["screens"]
+    wpc = screens.get("white", {}).get("per_channel", {})
+    max_ref = screens.get("white", {}).get("max_ref")
+    diag_of = {"R": "red", "G": "green", "B": "blue"}
+    scr = {"R": "RED", "G": "GREEN", "B": "BLUE"}
+    per, need, opaque = {}, [], []
+    for c in ("R", "G", "B"):
+        provided = diag_of[c] in screens
+        f = wpc.get(c) or screens.get(diag_of[c], {}).get("per_channel", {}).get(c)
+        if not f:
+            per[c] = "not measured"
+            continue
+        if f.get("floored"):
+            per[c] = "fully absorbed -> a=%.1f is a LOWER BOUND" % f["a"]
+            (opaque if provided else need).append(c)
+        elif abs(f.get("a", 0.0)) > 0.25 and f.get("r2", 1.0) < 0.5:
+            per[c] = "noisy: a=%.2f but r2=%.2f" % (f["a"], f["r2"])
+            if not provided:
+                need.append(c)
+        elif abs(f.get("a", 0.0)) < 0.12 or (abs(f.get("a", 0.0)) < 0.25
+                                             and f.get("r2", 1.0) < 0.6):
+            per[c] = ("~weakly absorbing: a=%.2f (little to fit, low r2 is "
+                      "expected -- fine)" % f["a"])
+        else:
+            per[c] = "reliable: a=%.2f, r2=%.2f" % (f["a"], f.get("r2", 1.0))
+
+    if need:
+        color_req = ("shoot WHITE + %s screen%s -- this filament absorbs %s too "
+                     "strongly to read from white alone; photograph it over each "
+                     "full-brightness single-colour screen so that channel can be "
+                     "over-exposed without clipping the others."
+                     % (" + ".join(scr[c] for c in need),
+                        "s" if len(need) > 1 else "", "/".join(need)))
+    else:
+        color_req = "WHITE screen only -- a normal transparent filament."
+    if opaque:
+        color_req += ("  (%s stays fully absorbed even on its own screen: "
+                      "genuinely opaque there, the lower bound is fine -- it reads "
+                      "~0 in any mix.)" % "/".join(opaque))
+
+    if max_ref is None:
+        exp_req = ("bare screen (the reference windows between cells) must read "
+                   "~85-95% of full -- bright but NOT clipped. Shoot RAW, dark "
+                   "room, ISO 100, screen at max FIXED brightness, lengthen the "
+                   "shutter (not ISO) to reach it, lock exposure + WB.")
+    else:
+        if max_ref < 0.75:
+            state = "TOO DIM -- lengthen the shutter (not ISO)"
+        elif max_ref > 0.97:
+            state = "TOO BRIGHT -- clipping; shorten the shutter"
+        else:
+            state = "OK"
+        exp_req = ("bare screen (reference windows) must read ~85-95%%; yours = "
+                   "%.0f%% [%s]. Shoot RAW, dark room, ISO 100, screen at max "
+                   "FIXED brightness, lock exposure + WB." % (max_ref * 100, state))
+
+    return {"filament_class": "intense" if need else "normal-transparent",
+            "per_channel": per, "color_requirement": color_req,
+            "exposure_requirement": exp_req,
+            "needs_extra_screens": [scr[c] for c in need]}
+
+
 def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10,
             max_dim=1600, blur_frac=0.03, layer_mm=None, diag_dir=None):
     """photos: dict screen_colour -> HxWx3 uint8 array.  Returns calibration dict.
@@ -613,6 +685,7 @@ def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10
         "samples": samples,
         "warnings": _quality_warnings(screens),
     }
+    cal["reliability"] = _reliability(cal)
     if diag_dir is not None:
         _draw_curves(screens, os.path.join(diag_dir, "curves.png"),
                      layout["max_mm"])
@@ -1039,6 +1112,13 @@ def main(argv=None):
     sys.stderr.write("filament '%s': primary absorption per mm = %s\n"
                      % (opts.name, cal["primary_absorption_per_mm"]))
     sys.stderr.write("wrote %s (+ detect_*.png, curves.png)\n" % out)
+    rel = cal["reliability"]
+    sys.stderr.write("\nfilament class: %s\n" % rel["filament_class"].upper())
+    for c in ("R", "G", "B"):
+        sys.stderr.write("  channel %s: %s\n" % (c, rel["per_channel"][c]))
+    sys.stderr.write("\nCAPTURE REQUIREMENTS\n")
+    sys.stderr.write("  colour   : %s\n" % rel["color_requirement"])
+    sys.stderr.write("  exposure : %s\n" % rel["exposure_requirement"])
     if cal["warnings"]:
         sys.stderr.write("\n!! SHOT QUALITY WARNINGS -- results may be unreliable:\n")
         for wmsg in cal["warnings"]:
