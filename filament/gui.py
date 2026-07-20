@@ -247,7 +247,8 @@ async function analyze(){
  if(res.images)res.images.forEach(p=>h+=img(p));
  document.getElementById('c_result').innerHTML=h;
 }
-const WARN_CN=[['OVER-EXPOSED','过曝：参考窗被削顶，请缩短快门/降低亮度'],
+const WARN_CN=[['SKIPPED','已跳过该照片：未找到标记点（该背光下标记被冲淡，或标定板出框/过度倾斜）。已用其它可用照片完成校准；普通耗材只需白屏即可'],
+ ['OVER-EXPOSED','过曝：参考窗被削顶，请缩短快门/降低亮度'],
  ['UNDER-EXPOSED','曝光不足：背光太暗，请调亮屏幕/延长快门'],
  ['TOO DIM','该屏偏暗：延长其快门（不要加 ISO）'],
  ['CLIPPED','该屏过曝：缩短其快门'],

@@ -285,4 +285,7 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except __import__("analyze_calibration").PadDetectionError as e:
+        raise SystemExit("error: %s" % e)

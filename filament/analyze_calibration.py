@@ -91,6 +91,12 @@ def project(H, pts):
 # --------------------------------------------------------------------------- #
 # Marker detection: connected components on a "very dark" mask
 # --------------------------------------------------------------------------- #
+class PadDetectionError(RuntimeError):
+    """The 4 register markers couldn't be found in a photo (washed-out markers,
+    off-frame pad, extreme tilt).  Caught per-screen so one bad shot doesn't abort
+    a multi-screen analysis."""
+
+
 def _components(mask, min_area):
     """4/8-connected components of a boolean mask (BFS over the True pixels).
 
@@ -357,8 +363,10 @@ def _locate(rgb, layout, dark_frac=0.10):
                     seen[k] = c
     square = list(seen.values())
     if len(square) < 4:
-        raise SystemExit("error: found only %d marker-like blobs (need 4)."
-                         % len(square))
+        raise PadDetectionError("found only %d marker-like blobs (need 4) -- the "
+                                "markers may be washed out by the backlight colour "
+                                "(e.g. a red filament over a red screen) or the pad "
+                                "is off-frame/too tilted" % len(square))
     pts = np.array([[c["cx"], c["cy"]] for c in square], float)
     reg = layout["register_markers"]["corners"]
     mm = np.array([[reg[n]["cx"], reg[n]["cy"]] for n in
@@ -393,7 +401,7 @@ def _locate(rgb, layout, dark_frac=0.10):
         if best is None or score > best[0]:
             best = (score, ring, combo)
     if best is None:
-        raise SystemExit("error: could not locate the pad (no plausible marker quad)")
+        raise PadDetectionError("could not locate the pad (no plausible marker quad)")
     ring, combo = best[1], best[2]
     other = np.array([pts[i] for i in range(len(square)) if i not in combo])
 
@@ -659,9 +667,14 @@ def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10
 
     screens = {}
     samples = []
+    skipped = []
     for screen, rgb0 in photos.items():
         rgb = _prep(rgb0, max_dim, blur_frac)
-        H, corners = _locate(rgb, layout, dark_frac=dark_frac)
+        try:
+            H, corners = _locate(rgb, layout, dark_frac=dark_frac)
+        except PadDetectionError as e:               # skip this shot, keep going
+            skipped.append((screen, str(e)))
+            continue
 
         # blur to smooth print texture (layer lines) before SAMPLING, with a
         # radius tied to the projected cell size so it averages several layer
@@ -723,6 +736,11 @@ def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10
             _draw_diag(rgb, H, cells, win, corners, None,
                        os.path.join(diag_dir, "detect_%s.png" % screen))
 
+    if not screens:                                  # every shot failed detection
+        raise PadDetectionError(
+            "no usable photo -- the markers weren't found in any shot. %s"
+            % (skipped[0][1] if skipped else ""))
+
     # headline: per-channel absorption from the WHITE screen -- the physically
     # correct basis for backlit-WHITE panes (white light through the filament ->
     # camera RGB is exactly what a pane does) and the easiest to expose cleanly.
@@ -747,6 +765,11 @@ def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10
         "samples": samples,
         "warnings": _quality_warnings(screens),
     }
+    for scr, msg in skipped:                         # detection-failed shots
+        cal["warnings"].append(
+            "[%s] SKIPPED (markers not found): %s. This shot was ignored; the "
+            "calibration used the shots that worked. For a normal filament the "
+            "WHITE shot alone is enough." % (scr, msg))
     cal["reliability"] = _reliability(cal)
     if diag_dir is not None:
         _draw_curves(screens, os.path.join(diag_dir, "curves.png"),
@@ -1200,4 +1223,7 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except PadDetectionError as e:
+        raise SystemExit("error: %s" % e)
