@@ -242,23 +242,33 @@ def solve_target(target_hex, pool, max_filaments=3, tmin=0.2, tmax=4.0,
 # mixture.py from printed ramps.  Predicted transmittance = mix_tau_multi.
 # --------------------------------------------------------------------------- #
 def load_sigma(paths):
-    """Merge per-filament sigma from one or more mixture_calibration.json files.
+    """Load sigma from one or more mixture_calibration.json files.
 
-    Returns (sigma{name:[3]}, measured_pairs{key:{...}}).  Later files override
-    earlier ones for the same filament; each pair's measured ramp is kept for the
-    posterior override (a directly-measured pair beats the generalized sigma)."""
-    sigma, pairs = {}, {}
+    Returns (sigma{name:[3]}, pair_sigma{(A,B): {name:[3]}}).  `sigma` is the
+    generalized per-filament value (last file wins) used to predict UNSEEN pairs;
+    `pair_sigma` holds each DIRECTLY-calibrated pair's own fit, used as a POSTERIOR
+    for that exact pair (a measured pair beats the generalized prediction)."""
+    sigma, pair_sigma = {}, {}
     for path in paths or []:
         with open(path) as f:
             mc = json.load(f)
-        for n, s in mc.get("sigma", {}).items():
-            sigma[n] = np.asarray(s, float)
+        sig = {n: np.asarray(s, float) for n, s in mc.get("sigma", {}).items()}
+        for n, s in sig.items():
+            sigma[n] = s
         fils = mc.get("filaments")
-        if fils and mc.get("measured_tau"):
-            pairs["+".join(sorted(fils))] = {
-                "A": fils[0], "B": fils[1], "ratios": mc["ratios"],
-                "tau": mc["measured_tau"], "T": mc.get("thickness_mm", 1.0)}
-    return sigma, pairs
+        if fils and len(fils) == 2 and all(n in sig for n in fils):
+            pair_sigma[tuple(sorted(fils))] = {n: sig[n] for n in fils}
+    return sigma, pair_sigma
+
+
+def _pair_sigmas(A, B, sigma, pair_sigma):
+    """(sigma_A, sigma_B, source) for a filament pair -- the pair's OWN direct fit
+    if it was calibrated (posterior), else the generalized per-filament sigma."""
+    key = tuple(sorted((A.name, B.name)))
+    if pair_sigma and key in pair_sigma:
+        return pair_sigma[key][A.name], pair_sigma[key][B.name], "direct"
+    z = np.zeros(3)
+    return sigma.get(A.name, z), sigma.get(B.name, z), "generalized"
 
 
 def predict_mix_linear(fils, sigs, fracs, thickness):
@@ -269,7 +279,7 @@ def predict_mix_linear(fils, sigs, fracs, thickness):
     return mix_tau_multi(fils, [np.asarray(s, float) for s in sigs], fr, thickness)
 
 
-def solve_target_sublayer(target_hex, pool, sigma, ratio_step=0.05,
+def solve_target_sublayer(target_hex, pool, sigma, pair_sigma=None, ratio_step=0.05,
                           tmin=0.4, tmax=3.0, layer=0.2, max_filaments=2,
                           tol_de=1.5):
     """Best sub-layer recipe for one target: a single filament, or 2-3 filaments
@@ -295,9 +305,8 @@ def solve_target_sublayer(target_hex, pool, sigma, ratio_step=0.05,
         combos += [c for c in itertools.combinations(range(len(pool)), 2)]
     for a, b in combos:                                  # 2-filament mix
         A, B = pool[a], pool[b]
-        sA = sigma.get(A.name, np.zeros(3))
-        sB = sigma.get(B.name, np.zeros(3))
-        have = A.name in sigma and B.name in sigma
+        sA, sB, src = _pair_sigmas(A, B, sigma, pair_sigma)   # direct pair wins
+        have = (src == "direct") or (A.name in sigma and B.name in sigma)
         for p in ratios:                                 # p = fraction of B
             if p > B.max_frac + 1e-9 or (1 - p) > A.max_frac + 1e-9:
                 continue                                 # intense-filament cap
@@ -305,7 +314,8 @@ def solve_target_sublayer(target_hex, pool, sigma, ratio_step=0.05,
                 add(predict_mix_linear([A, B], [sA, sB], [1 - p, p], T),
                     {"n": 2, "filaments": [A.name, B.name],
                      "fracs_pct": [round((1 - p) * 100), round(p * 100)],
-                     "thickness_mm": float(T), "has_sigma": have})
+                     "thickness_mm": float(T), "has_sigma": have,
+                     "sigma_source": src})
 
     if max_filaments >= 3:                               # 3-filament mix (coarse)
         r3 = np.round(np.arange(0.2, 0.81, 0.2), 3)
@@ -536,9 +546,9 @@ def run_predict(opts):
     byname = {m.name: m for m in pool}
     if not opts.stack and not opts.mix:
         raise SystemExit("error: pass --stack (full-layer) or --mix (sub-layer)")
-    sigma = {}
+    sigma, pair_sigma = {}, {}
     if opts.mix:
-        sigma, _ = load_sigma(opts.mixcal)
+        sigma, pair_sigma = load_sigma(opts.mixcal)
         if not sigma:
             sys.stderr.write("warning: --mix with no --mixcal -> sigma=0 "
                              "(baseline; off by dE ~15 mid-ramp)\n")
@@ -563,12 +573,17 @@ def run_predict(opts):
             raise SystemExit("error: no calibration for %s (have %s)"
                              % (miss, list(byname)))
         fils = [byname[n] for n in mix]
-        sigs = [sigma.get(n, np.zeros(3)) for n in mix]
+        if len(fils) == 2:                          # posterior for a direct pair
+            sA, sB, src = _pair_sigmas(fils[0], fils[1], sigma, pair_sigma)
+            sigs = [sA, sB]
+        else:
+            sigs = [sigma.get(n, np.zeros(3)) for n in mix]
+            src = "generalized"
         lin = predict_mix_linear(fils, sigs, list(mix.values()), opts.thickness)
         hx, lab = linear_to_hex(lin), linear_to_lab(lin)
         tot = sum(mix.values())
         label = "mix: " + " / ".join("%s %d%%" % (n, round(f / tot * 100))
-                                     for n, f in mix.items()) + " @%.1fmm" % opts.thickness
+                                     for n, f in mix.items()) + " @%.1fmm[%s]" % (opts.thickness, src)
         rows.append({"label": label, "mix": mix, "thickness_mm": opts.thickness,
                      "predicted_hex": hx, "lab": [round(x, 1) for x in lab]})
         print("%-34s #%-8s  L*%.0f a*%.0f b*%.0f" % (label, hx, *lab))
@@ -651,7 +666,7 @@ def main(argv=None):
     os.makedirs(opts.out_dir, exist_ok=True)
 
     if opts.mode == "sub-layer":
-        sigma, mpairs = load_sigma(opts.mixcal)
+        sigma, pair_sigma = load_sigma(opts.mixcal)
         if not sigma:
             raise SystemExit(
                 "error: sub-layer mode needs mixture calibration -- pass "
@@ -662,8 +677,11 @@ def main(argv=None):
             sys.stderr.write("warning: no sigma for %s -- mixes involving them "
                              "fall back to baseline (unreliable)\n"
                              % ", ".join(missing))
+        if pair_sigma:
+            sys.stderr.write("directly-calibrated pairs (posterior): %s\n"
+                             % ", ".join("+".join(k) for k in sorted(pair_sigma)))
         recipes = [solve_target_sublayer(
-            h, pool, sigma, tmin=opts.min_mm, tmax=opts.max_mm,
+            h, pool, sigma, pair_sigma, tmin=opts.min_mm, tmax=opts.max_mm,
             layer=opts.layer, max_filaments=opts.max_filaments,
             tol_de=opts.tol_de) for h in targets]
         with open(os.path.join(opts.out_dir, "recipes.json"), "w") as f:
