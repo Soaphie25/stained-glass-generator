@@ -339,16 +339,12 @@ def _cluster_colors(colw, k, SR):
     return out
 
 
-def build_3mf(frag_dir, cal_root, out_path, thickness=1.6, max_delta=20.0,
-              num_colors=None, bed_mm=256.0):
-    from bambu_mix3mf import write_bambu_color_mix_3mf, default_template
+def map_recipes(frag_dir, cal_root, thickness=1.6, max_delta=20.0,
+                num_colors=None, max_size_mm=None):
+    """Read fragments and map each pane colour to the nearest printable recipe."""
     SR, pool, sigma, pair_sigma, cands2 = _lut(cal_root, thickness, 2)
     cands3 = SR.sublayer_candidates(pool, sigma, pair_sigma, thickness, thickness,
                                     thickness, 3)
-    names = [m.name for m in pool]
-    slot_of = {n: i + 1 for i, n in enumerate(names)}
-    black_slot = len(names) + 1
-
     frags = sorted(glob.glob(os.path.join(frag_dir, "color_*.svg")))
     if not frags:
         raise SystemExit("no color_*.svg fragments in %s" % frag_dir)
@@ -358,6 +354,11 @@ def build_3mf(frag_dir, cal_root, out_path, thickness=1.6, max_delta=20.0,
         items.append({"file": f, "w": w, "h": h, "hex": hexc, "rings": rings,
                       "area": sum(abs(_ring_area(r)) for r in rings)})
     W, H = items[0]["w"], items[0]["h"]
+    scale = (max_size_mm / max(W, H)) if max_size_mm else 1.0
+    if scale != 1.0:                                 # resize panel, keep aspect
+        for it in items:
+            it["rings"] = [r * scale for r in it["rings"]]
+        W, H = W * scale, H * scale
 
     targets = {it["hex"]: it["hex"] for it in items}
     if num_colors and num_colors < len(items):
@@ -374,6 +375,60 @@ def build_3mf(frag_dir, cal_root, out_path, thickness=1.6, max_delta=20.0,
                 rec = r3
         return rec
     rec_cache = {t: recipe(t) for t in set(targets.values())}
+    return {"SR": SR, "pool": pool, "items": items, "rec_cache": rec_cache,
+            "targets": targets, "W": W, "H": H, "scale": scale,
+            "names": [m.name for m in pool], "thickness": thickness,
+            "max_delta": max_delta}
+
+
+def render_preview(m, path, ppm=3.0):
+    """Gamut preview PNG: each pane painted its PRINTABLE recipe colour (what the
+    panel will actually look like), not the original image colour."""
+    from PIL import Image, ImageDraw
+    W, H = m["W"], m["H"]
+    img = Image.new("RGB", (max(1, int(W * ppm)), max(1, int(H * ppm))),
+                    (16, 16, 20))
+    d = ImageDraw.Draw(img)
+    panes = []
+    for it in m["items"]:
+        hx = m["rec_cache"][m["targets"][it["hex"]]]["predicted_hex"]
+        rgb = tuple(int(hx[2 * k:2 * k + 2], 16) for k in range(3))
+        for poly in nest_polygons(it["rings"]):       # solid panes only
+            panes.append((abs(_ring_area(poly["outer"])), poly["outer"], rgb))
+    for _, outer, rgb in sorted(panes, key=lambda x: -x[0]):   # big -> small on top
+        d.polygon([(x * ppm, y * ppm) for x, y in outer], fill=rgb)
+    img.save(path)
+    return path
+
+
+def _print_table(m):
+    rows = [(it["hex"], m["rec_cache"][m["targets"][it["hex"]]], it["area"])
+            for it in m["items"]]
+    print("\npanel %.0fx%.0f mm @ %.1f mm | filaments: %s + black"
+          % (m["W"], m["H"], m["thickness"], ", ".join(m["names"])))
+    print("\n%-9s %6s  %-28s %5s" % ("colour", "area", "recipe", "dE"))
+    print("-" * 56)
+    ngam = 0
+    for hexc, rec, area in sorted(rows, key=lambda r: -r[2]):
+        mix = " / ".join("%s %d%%" % (n, f)
+                         for n, f in zip(rec["filaments"], rec["fracs_pct"]))
+        out = rec["delta_e"] > m["max_delta"]
+        ngam += out
+        print("#%-8s %6.0f  %-28s %5.1f%s" % (hexc, area, mix, rec["delta_e"],
+              "  << out of gamut" if out else ""))
+    print("\n%d panes, %d out of gamut (dE>%.0f -- add the missing filament)"
+          % (len(rows), ngam, m["max_delta"]))
+
+
+def build_3mf(frag_dir, cal_root, out_path, thickness=1.6, max_delta=20.0,
+              num_colors=None, bed_mm=256.0, max_size_mm=None):
+    from bambu_mix3mf import write_bambu_color_mix_3mf, default_template
+    m = map_recipes(frag_dir, cal_root, thickness, max_delta, num_colors, max_size_mm)
+    SR, pool, items = m["SR"], m["pool"], m["items"]
+    names, H, scale = m["names"], m["H"], m["scale"]
+    rec_cache, targets = m["rec_cache"], m["targets"]
+    slot_of = {n: i + 1 for i, n in enumerate(names)}
+    black_slot = len(names) + 1
 
     parts, rows = [], []
     for it in items:
@@ -390,26 +445,18 @@ def build_3mf(frag_dir, cal_root, out_path, thickness=1.6, max_delta=20.0,
                            "colour": "#" + rec["predicted_hex"]}
         parts.append(part)
         rows.append((it["hex"], rec, it["area"]))
-    cb = _corner_boxes(items[0]["file"], H, 0.0, thickness)
+    cb = _corner_boxes(items[0]["file"], H / scale, 0.0, thickness)
+    cb = [tuple(v * scale if k in (0, 1, 3, 4) else v for k, v in enumerate(b))
+          for b in cb]
     if cb:
         parts.append({"name": "markers", "boxes": cb, "slot": black_slot})
 
-    bases = [{"colour": "#" + SR.linear_to_hex(SR.predict_linear([m], [thickness]))}
-             for m in pool] + [{"colour": "#111111"}]
+    bases = [{"colour": "#" + SR.linear_to_hex(SR.predict_linear([fl], [thickness]))}
+             for fl in pool] + [{"colour": "#111111"}]
     write_bambu_color_mix_3mf(out_path, default_template(), bases, parts, bed_mm)
-
-    print("\npanel %dx%d mm @ %.1f mm  ->  %s" % (W, H, thickness, out_path))
-    print("filaments: %s + black" % ", ".join(names))
-    print("\n%-9s %6s  %-28s %5s" % ("colour", "area", "recipe", "dE"))
-    print("-" * 56)
-    for hexc, rec, area in sorted(rows, key=lambda r: -r[2]):
-        mix = " / ".join("%s %d%%" % (n, f)
-                         for n, f in zip(rec["filaments"], rec["fracs_pct"]))
-        flag = "  << out of gamut" if rec["delta_e"] > max_delta else ""
-        print("#%-8s %6.0f  %-28s %5.1f%s" % (hexc, area, mix, rec["delta_e"], flag))
-    ngam = sum(1 for _, rec, _ in rows if rec["delta_e"] > max_delta)
-    print("\n%d panes, %d out of gamut (dE>%.0f -- add the missing filament)"
-          % (len(rows), ngam, max_delta))
+    render_preview(m, os.path.splitext(out_path)[0] + "_preview.png")
+    _print_table(m)
+    print("\n-> %s (+ _preview.png)" % out_path)
     return 0
 
 
@@ -467,12 +514,14 @@ def main(argv=None):
                    help="allow a 3-filament mix only if 2-mix exceeds this dE")
     p.add_argument("--num-colors", type=int,
                    help="reduce the palette to this many recipes (default: all)")
+    p.add_argument("--max-size-mm", type=float,
+                   help="scale the panel so its longest side is this (keep aspect)")
     p.add_argument("--selftest", action="store_true", help="geometry self-test")
     opts = p.parse_args(argv)
     if opts.selftest or not opts.frag_dir:
         return _selftest()
     return build_3mf(opts.frag_dir, opts.cal_root, opts.out, opts.thickness,
-                     opts.max_delta, opts.num_colors)
+                     opts.max_delta, opts.num_colors, max_size_mm=opts.max_size_mm)
 
 
 if __name__ == "__main__":
