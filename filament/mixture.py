@@ -225,6 +225,9 @@ def run_fit(opts):
         layout = json.load(f)
     fA = load_filament(opts.a.split("=")[0], opts.a.split("=", 1)[1])
     fB = load_filament(opts.b.split("=")[0], opts.b.split("=", 1)[1])
+    if opts.out_dir is None:                          # natural: <root>/mix/<A>+<B>/
+        opts.out_dir = os.path.join(opts.cal_root, "mix",
+                                    "+".join(sorted((fA.name, fB.name))))
     T = A._sample_cells_linear(layout, A._load_photo(opts.white), 1600, 0.03)[0]
     pads = layout["pads"]
     Tmm = layout["total_thickness_mm"]
@@ -270,7 +273,10 @@ def main(argv=None):
     ft.add_argument("--white", required=True, help="photo over the white screen")
     ft.add_argument("--a", required=True, help="A filament: name=calibration.json")
     ft.add_argument("--b", required=True, help="B filament: name=calibration.json")
-    ft.add_argument("--out-dir", default="filament/mixcal")
+    ft.add_argument("--cal-root", default="filament/calibration",
+                    help="calibration root; result -> <root>/mix/<A>+<B>/")
+    ft.add_argument("--out-dir", default=None,
+                    help="override output folder (default <cal-root>/mix/<A>+<B>)")
     opts = p.parse_args(argv)
     if opts.cmd == "selftest":
         return run_selftest()

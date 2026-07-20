@@ -246,5 +246,35 @@ python3 filament/mixture.py selftest
 - [x] Validate on a real printed + photographed pad (red+green, 0.2 mm)
 - [x] Sub-layer mixture calibration (`mixture.py fit`) + solver
       (`solve_recipe.py --mode sub-layer`), real-print validated (ΔE 11.7→4.1)
-- [ ] Third filament (blue) to test σ generalisation on an unseen pair (A-C)
-- [ ] Upgrade Delta-E CIE76 → CIEDE2000; integrate directly into the SVG generator
+- [x] Third filament (blue): σ generalisation tested on the unseen red–blue pair
+      (baseline ΔE 18.8 → generalised 10.7 → direct/posterior 5.2)
+- [x] Intense-filament detection + mix-fraction cap; printable-ratio LUT
+- [x] Colour LUT + gamut (`solve_recipe.py lut`); palette map (`map`)
+- [ ] Upgrade Delta-E CIE76 → CIEDE2000
+- [ ] **Browser GUI**: local server wrapping calibrate/map/lut, builds the CLI
+      commands and shows live previews (gamut, swatches, coverage)
+- [ ] **Final**: SVG panes (`color_NN_<hex>`) → LUT lookup → per-pane recipe →
+      one Bambu color-mix 3MF with every pane's colour embedded (reuses
+      `bambu_mix3mf.py`)
+
+## Folder layout & workflow
+
+Calibration results live under one root so the tools chain with no paths:
+
+```
+filament/calibration/
+  <name>/calibration.json                 # per filament (analyze_calibration.py)
+  mix/<A>+<B>/mixture_calibration.json     # per pair     (mixture.py fit)
+  color_lut.json, gamut.png, filament_map.png   # generated (solve_recipe.py lut/map)
+```
+
+```bash
+# 1. calibrate each filament (one white shot; auto-stored in calibration/<name>/)
+python3 filament/analyze_calibration.py analyze --layout filament/pad/layout.json \
+    --name red --white photo/red-w.dng --layer-mm 0.2
+# 2. calibrate a spanning set of pairs (auto-stored in calibration/mix/<A>+<B>/)
+python3 filament/mixture.py fit --layout filament/mixpad/layout.json --white photo/rg.dng \
+    --a red=filament/calibration/red/calibration.json --b green=filament/calibration/green/calibration.json
+# 3. build the LUT + gamut (reads the whole calibration root, no paths)
+python3 filament/solve_recipe.py lut --match ff8800,3366cc
+```

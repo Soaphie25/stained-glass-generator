@@ -308,47 +308,47 @@ def predict_mix_linear(fils, sigs, fracs, thickness):
     return mix_tau_multi(fils, [np.asarray(s, float) for s in sigs], fr, thickness)
 
 
-def solve_target_sublayer(target_hex, pool, sigma, pair_sigma=None, ratio_step=0.05,
-                          tmin=0.4, tmax=3.0, layer=0.2, max_filaments=2,
-                          tol_de=1.5):
-    """Best sub-layer recipe for one target: a single filament, or 2-3 filaments
-    interleaved at a ratio, over a total thickness.  Returns a recipe dict."""
-    target_lin = hex_to_linear(target_hex)
+def sublayer_candidates(pool, sigma, pair_sigma=None, tmin=0.4, tmax=3.0,
+                        layer=0.2, max_filaments=2):
+    """The full set of PRINTABLE sub-layer recipes with their predicted backlit
+    colour -- this IS the colour LUT.  Singles, plus 2-/3-filament mixes at
+    printable ratios over a thickness grid, honouring each intense filament's mix
+    cap and using a directly-calibrated pair's posterior sigma when available.
+    Each entry keeps ``_lin`` (linear RGB) for downstream Delta-E / Lab."""
     thicks = np.round(np.arange(tmin, tmax + 1e-9, layer), 3)
     ratios = [r for r in PRINTABLE_RATIOS if 0 < r < 1]   # slicer-buildable only
-    cands = []
+    out = []
 
-    def add(lin, rec):
-        rec["delta_e"] = round(delta_e(target_lin, lin), 3)
+    def emit(lin, rec):
+        rec["_lin"] = lin
         rec["predicted_hex"] = linear_to_hex(lin)
-        cands.append(rec)
+        out.append(rec)
 
     for m in pool:                                       # single (pure) pane
         for T in thicks:
-            add(predict_linear([m], [T]),
-                {"n": 1, "filaments": [m.name], "fracs_pct": [100],
-                 "thickness_mm": float(T), "has_sigma": True})
+            emit(predict_linear([m], [T]),
+                 {"n": 1, "filaments": [m.name], "fracs_pct": [100],
+                  "sublayer_ratio": "1", "thickness_mm": float(T),
+                  "has_sigma": True, "sigma_source": "pure"})
 
-    combos = []
     if max_filaments >= 2:
-        combos += [c for c in itertools.combinations(range(len(pool)), 2)]
-    for a, b in combos:                                  # 2-filament mix
-        A, B = pool[a], pool[b]
-        sA, sB, src = _pair_sigmas(A, B, sigma, pair_sigma)   # direct pair wins
-        have = (src == "direct") or (A.name in sigma and B.name in sigma)
-        for p in ratios:                                 # p = fraction of B
-            if p > B.max_frac + 1e-9 or (1 - p) > A.max_frac + 1e-9:
-                continue                                 # intense-filament cap
-            counts = sublayer_counts([1 - p, p])
-            for T in thicks:
-                add(predict_mix_linear([A, B], [sA, sB], [1 - p, p], T),
-                    {"n": 2, "filaments": [A.name, B.name],
-                     "fracs_pct": [round((1 - p) * 100), round(p * 100)],
-                     "sublayer_ratio": ":".join(map(str, counts)),
-                     "thickness_mm": float(T), "has_sigma": have,
-                     "sigma_source": src})
+        for a, b in itertools.combinations(range(len(pool)), 2):
+            A, B = pool[a], pool[b]
+            sA, sB, src = _pair_sigmas(A, B, sigma, pair_sigma)
+            have = (src == "direct") or (A.name in sigma and B.name in sigma)
+            for p in ratios:                             # p = fraction of B
+                if p > B.max_frac + 1e-9 or (1 - p) > A.max_frac + 1e-9:
+                    continue                             # intense-filament cap
+                counts = sublayer_counts([1 - p, p])
+                for T in thicks:
+                    emit(predict_mix_linear([A, B], [sA, sB], [1 - p, p], T),
+                         {"n": 2, "filaments": [A.name, B.name],
+                          "fracs_pct": [round((1 - p) * 100), round(p * 100)],
+                          "sublayer_ratio": ":".join(map(str, counts)),
+                          "thickness_mm": float(T), "has_sigma": have,
+                          "sigma_source": src})
 
-    if max_filaments >= 3:                               # 3-filament mix (coarse)
+    if max_filaments >= 3:
         r3 = np.round(np.arange(0.2, 0.81, 0.2), 3)
         for a, b, c in itertools.combinations(range(len(pool)), 3):
             mods = [pool[a], pool[b], pool[c]]
@@ -364,23 +364,40 @@ def solve_target_sublayer(target_hex, pool, sigma, pair_sigma=None, ratio_step=0
                         continue                         # intense-filament cap
                     counts = sublayer_counts([fa, fb, fc])
                     for T in thicks:
-                        add(predict_mix_linear(mods, sgs, [fa, fb, fc], T),
-                            {"n": 3, "filaments": [m.name for m in mods],
-                             "fracs_pct": [round(fa * 100), round(fb * 100),
-                                           round(fc * 100)],
-                             "sublayer_ratio": ":".join(map(str, counts)),
-                             "thickness_mm": float(T), "has_sigma": have})
+                        emit(predict_mix_linear(mods, sgs, [fa, fb, fc], T),
+                             {"n": 3, "filaments": [m.name for m in mods],
+                              "fracs_pct": [round(fa * 100), round(fb * 100),
+                                            round(fc * 100)],
+                              "sublayer_ratio": ":".join(map(str, counts)),
+                              "thickness_mm": float(T), "has_sigma": have,
+                              "sigma_source": "generalized"})
+    return out
 
-    if not cands:
+
+def solve_target_sublayer(target_hex, pool, sigma, pair_sigma=None, ratio_step=0.05,
+                          tmin=0.4, tmax=3.0, layer=0.2, max_filaments=2,
+                          tol_de=1.5, cands=None):
+    """Best sub-layer recipe for one target.  Pass a precomputed ``cands`` (from
+    sublayer_candidates) to reuse the LUT across many targets."""
+    target_lin = hex_to_linear(target_hex)
+    if cands is None:
+        cands = sublayer_candidates(pool, sigma, pair_sigma, tmin, tmax, layer,
+                                    max_filaments)
+    scored = []
+    for c in cands:
+        d = {k: v for k, v in c.items() if k != "_lin"}
+        d["delta_e"] = round(delta_e(target_lin, c["_lin"]), 3)
+        scored.append(d)
+    if not scored:
         return {"target_hex": target_hex.lower(), "delta_e": None}
-    cands.sort(key=lambda c: c["delta_e"])
-    best_de = cands[0]["delta_e"]
-    near = [c for c in cands if c["delta_e"] <= best_de + tol_de]
+    scored.sort(key=lambda c: c["delta_e"])
+    best_de = scored[0]["delta_e"]
+    near = [c for c in scored if c["delta_e"] <= best_de + tol_de]
     chosen = min(near, key=lambda c: (c["n"], c["delta_e"]))    # prefer simpler
-    single = min((c for c in cands if c["n"] == 1),
+    single = min((c for c in scored if c["n"] == 1),
                  key=lambda c: c["delta_e"], default=None)
     return {"target_hex": target_hex.lower(), "recommended": chosen,
-            "best_match": cands[0], "best_single": single}
+            "best_match": scored[0], "best_single": single}
 
 
 def _fmt_mix(rec):
@@ -530,18 +547,41 @@ def run_selftest(out_dir):
 
 
 # --------------------------------------------------------------------------- #
+# Calibration folder layout (the natural workflow):
+#   filament/calibration/<name>/calibration.json           single-filament cals
+#   filament/calibration/mix/<A>+<B>/mixture_calibration.json   pair sigmas
+# Point any command at the root with --cal-root (default) and it discovers both.
+CAL_ROOT = "filament/calibration"
+
+
+def _discover_mixcals(opts):
+    """Extend opts.mixcal with every mix/*/mixture_calibration.json under the
+    calibration root, so `--cal-root` alone wires up all the pair sigmas.  Skipped
+    when the user is explicit with --cal/--cal-dir (they manage --mixcal then)."""
+    root = getattr(opts, "cal_root", None)
+    if not root or getattr(opts, "cal", None) or getattr(opts, "cal_dir", None):
+        return
+    found = sorted(glob.glob(os.path.join(root, "mix", "*",
+                                          "mixture_calibration.json")))
+    have = list(opts.mixcal or [])
+    opts.mixcal = have + [p for p in found if p not in have]
+
+
 def _load_pool(opts):
     pool = []
+    cal_dir = getattr(opts, "cal_dir", None)
+    root = getattr(opts, "cal_root", None)
+    if root and not cal_dir and not (opts.cal):      # single cals in <root>/<name>/
+        cal_dir = root
     for spec in opts.cal or []:
         if "=" not in spec:
             raise SystemExit("error: --cal expects name=path.json, got %r" % spec)
         name, path = spec.split("=", 1)
         pool.append(load_filament(name, path))
-    if opts.cal_dir:
-        for path in sorted(glob.glob(os.path.join(opts.cal_dir, "*",
+    if cal_dir:
+        for path in sorted(glob.glob(os.path.join(cal_dir, "*",
                                                   "calibration.json"))):
-            name = os.path.basename(os.path.dirname(path))
-            pool.append(load_filament(name, path))
+            pool.append(load_filament(os.path.basename(os.path.dirname(path)), path))
     return pool
 
 
@@ -576,9 +616,10 @@ def write_predict_swatches(rows, path, sw=140, hh=60):
 
 
 def run_predict(opts):
+    _discover_mixcals(opts)
     pool = _load_pool(opts)
     if not pool:
-        raise SystemExit("error: no calibrations (use --cal or --cal-dir)")
+        raise SystemExit("error: no calibrations (use --cal-root/--cal-dir/--cal)")
     byname = {m.name: m for m in pool}
     if not opts.stack and not opts.mix:
         raise SystemExit("error: pass --stack (full-layer) or --mix (sub-layer)")
@@ -660,11 +701,87 @@ def _draw_filament_map(pool, ths, path):
     img.save(path)
 
 
-def run_map(opts):
-    """Full palette map: filament table + pair-coverage matrix + swatch image."""
+def _draw_gamut(cands, path):
+    """Reachable colours in the a*b* (hue/chroma) plane -- each printable recipe a
+    dot painted its own predicted colour.  Shows how much of colour space the
+    palette can hit; the hole in the middle is the un-saturatable greys."""
+    labs = [linear_to_lab(c["_lin"]) for c in cands]
+    A = [l[1] for l in labs] or [0]
+    B = [l[2] for l in labs] or [0]
+    amin, amax = min(A + [0]) - 8, max(A + [0]) + 8
+    bmin, bmax = min(B + [0]) - 8, max(B + [0]) + 8
+    W = H = 560
+    pad = 44
+    img = Image.new("RGB", (W, H), (250, 250, 252))
+    d = ImageDraw.Draw(img)
+
+    def X(a):
+        return pad + (W - 2 * pad) * (a - amin) / (amax - amin)
+
+    def Y(b):
+        return H - pad - (H - 2 * pad) * (b - bmin) / (bmax - bmin)
+
+    d.line([X(0), pad, X(0), H - pad], fill=(220, 220, 226))
+    d.line([pad, Y(0), W - pad, Y(0)], fill=(220, 220, 226))
+    d.text((W - pad - 46, Y(0) + 5), "+a* red", fill=(150, 150, 160))
+    d.text((X(0) + 5, pad - 2), "+b* yellow", fill=(150, 150, 160))
+    for c, l in zip(cands, labs):
+        hx = c["predicted_hex"]
+        rgb = tuple(int(hx[k:k + 2], 16) for k in (0, 2, 4))
+        x, y = X(l[1]), Y(l[2])
+        d.ellipse([x - 3, y - 3, x + 3, y + 3], fill=rgb)
+    d.text((8, 8), "reachable gamut  (a*b* plane, %d printable recipes)" % len(cands),
+           fill=(40, 40, 50))
+    img.save(path)
+
+
+def run_lut(opts):
+    """Build the full colour LUT: every printable recipe -> its predicted colour,
+    written to color_lut.json (+ a gamut image).  With --match, look up targets."""
+    _discover_mixcals(opts)
     pool = _load_pool(opts)
     if not pool:
-        raise SystemExit("error: no calibrations (use --cal or --cal-dir)")
+        raise SystemExit("error: no calibrations (use --cal-root/--cal-dir/--cal)")
+    sigma, pair_sigma = load_sigma(opts.mixcal)
+    if not sigma:
+        sys.stderr.write("warning: no --mixcal -> mixes use sigma=0 (baseline; "
+                         "single-filament entries are still exact)\n")
+    cands = sublayer_candidates(pool, sigma, pair_sigma, opts.min_mm, opts.max_mm,
+                                opts.layer, opts.max_filaments)
+    entries = []
+    for c in cands:
+        e = {k: v for k, v in c.items() if k != "_lin"}
+        e["lab"] = [round(float(x), 1) for x in linear_to_lab(c["_lin"])]
+        entries.append(e)
+    os.makedirs(opts.out_dir, exist_ok=True)
+    with open(os.path.join(opts.out_dir, "color_lut.json"), "w") as f:
+        json.dump({"filaments": [m.name for m in pool], "count": len(entries),
+                   "layer_mm": opts.layer, "entries": entries}, f)
+    _draw_gamut(cands, os.path.join(opts.out_dir, "gamut.png"))
+    n_single = sum(1 for c in cands if c["n"] == 1)
+    print("colour LUT: %d recipes (%d single, %d mix) over %d filaments"
+          % (len(cands), n_single, len(cands) - n_single, len(pool)))
+    if opts.match:
+        print("\n%-9s %-9s %5s  recipe" % ("target", "predict", "dE"))
+        print("-" * 60)
+        for hx in opts.match.split(","):
+            hx = hx.strip().lstrip("#")
+            r = solve_target_sublayer(hx, pool, sigma, pair_sigma, cands=cands,
+                                      tol_de=opts.tol_de)
+            rec = r.get("recommended")
+            print("#%-8s #%-8s %5.1f  %s @ %.1fmm" %
+                  (hx, rec["predicted_hex"], rec["delta_e"], _fmt_mix(rec),
+                   rec["thickness_mm"]))
+    sys.stderr.write("\nwrote %s/color_lut.json + gamut.png\n" % opts.out_dir)
+    return 0
+
+
+def run_map(opts):
+    """Full palette map: filament table + pair-coverage matrix + swatch image."""
+    _discover_mixcals(opts)
+    pool = _load_pool(opts)
+    if not pool:
+        raise SystemExit("error: no calibrations (use --cal-root/--cal-dir/--cal)")
     sigma, pair_sigma = load_sigma(opts.mixcal)
     names = [m.name for m in pool]
     print("\nFILAMENT MAP  (%d filaments)\n" % len(pool))
@@ -718,6 +835,9 @@ def main(argv=None):
                          "(repeatable)")
     sv.add_argument("--cal-dir",
                     help="folder of <name>/calibration.json calibrations")
+    sv.add_argument("--cal-root", default=CAL_ROOT,
+                    help="calibration root; auto-discovers <name>/calibration.json "
+                         "+ mix/*/mixture_calibration.json (default %(default)s)")
     sv.add_argument("--targets", help="comma-separated target hex codes")
     sv.add_argument("--from-svg-dir",
                     help="read targets from color_NN_<hex> filenames in a folder")
@@ -737,6 +857,8 @@ def main(argv=None):
     pr.add_argument("--cal", action="append",
                     help="filament calibration: name=path/to/calibration.json")
     pr.add_argument("--cal-dir", help="folder of <name>/calibration.json")
+    pr.add_argument("--cal-root", default=CAL_ROOT,
+                    help="calibration root (auto-discovers cals + mix sigmas)")
     pr.add_argument("--stack", action="append", default=[],
                     help="full-layer stack, e.g. red=0.2,green=0.8 (mm); repeatable")
     pr.add_argument("--mix", action="append", default=[],
@@ -752,11 +874,30 @@ def main(argv=None):
     mp.add_argument("--cal", action="append",
                     help="filament calibration: name=path/to/calibration.json")
     mp.add_argument("--cal-dir", help="folder of <name>/calibration.json")
+    mp.add_argument("--cal-root", default=CAL_ROOT,
+                    help="calibration root (auto-discovers cals + mix sigmas)")
     mp.add_argument("--mixcal", action="append",
                     help="mixture_calibration.json (per-filament sigma); repeatable")
     mp.add_argument("--thicknesses", default="0.6,1.2,2.4",
                     help="swatch thicknesses in mm (comma-separated)")
-    mp.add_argument("--out-dir", default="filament/cals")
+    mp.add_argument("--out-dir", default=CAL_ROOT)
+
+    lt = sub.add_parser("lut", help="build the full printable colour LUT + gamut")
+    lt.add_argument("--cal", action="append",
+                    help="filament calibration: name=path/to/calibration.json")
+    lt.add_argument("--cal-dir", help="folder of <name>/calibration.json")
+    lt.add_argument("--cal-root", default=CAL_ROOT,
+                    help="calibration root (auto-discovers cals + mix sigmas)")
+    lt.add_argument("--mixcal", action="append",
+                    help="mixture_calibration.json (per-filament sigma); repeatable")
+    lt.add_argument("--max-filaments", type=int, default=2,
+                    help="1=singles, 2=+pairs (default), 3=+triples")
+    lt.add_argument("--min-mm", type=float, default=0.4)
+    lt.add_argument("--max-mm", type=float, default=3.0)
+    lt.add_argument("--layer", type=float, default=0.2)
+    lt.add_argument("--tol-de", type=float, default=1.5)
+    lt.add_argument("--match", help="comma-separated target hex codes to look up")
+    lt.add_argument("--out-dir", default=CAL_ROOT)
 
     st = sub.add_parser("selftest", help="synthetic recover-the-recipe check")
     st.add_argument("--out-dir", default="/tmp/recipes_selftest")
@@ -768,6 +909,8 @@ def main(argv=None):
         return run_predict(opts)
     if opts.cmd == "map":
         return run_map(opts)
+    if opts.cmd == "lut":
+        return run_lut(opts)
 
     pool = _load_pool(opts)
     if not pool:
@@ -783,6 +926,7 @@ def main(argv=None):
     os.makedirs(opts.out_dir, exist_ok=True)
 
     if opts.mode == "sub-layer":
+        _discover_mixcals(opts)
         sigma, pair_sigma = load_sigma(opts.mixcal)
         if not sigma:
             raise SystemExit(

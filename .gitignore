@@ -237,6 +237,9 @@ filament/cal_*/
 filament/cals/
 filament/cal_out/
 filament/recipes/
+# calibration results + generated LUT/map/gamut (user data)
+filament/calibration/
+filament/mixcal*/
 # Bambu color-mix 3MF exports used as templates (contain personal printer profile)
 test_*mix.3mf
 

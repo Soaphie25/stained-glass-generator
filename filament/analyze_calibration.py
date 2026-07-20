@@ -1107,7 +1107,11 @@ def main(argv=None):
     an.add_argument("--name", default="filament")
     an.add_argument("--white"), an.add_argument("--red")
     an.add_argument("--green"), an.add_argument("--blue")
-    an.add_argument("--out-dir", default="filament/cal_out")
+    an.add_argument("--cal-root", default="filament/calibration",
+                    help="calibration root; result is stored in <root>/<name>/ "
+                         "(default %(default)s)")
+    an.add_argument("--out-dir", default=None,
+                    help="override the output folder (default <cal-root>/<name>)")
     an.add_argument("--dark-frac", type=float, default=0.10,
                     help="marker darkness threshold as frac of screen brightness")
     an.add_argument("--ref-floor-frac", type=float, default=0.18)
@@ -1163,6 +1167,8 @@ def main(argv=None):
             photos[screen] = _load_photo(path)
     if not photos:
         raise SystemExit("error: pass at least one of --white/--red/--green/--blue")
+    if opts.out_dir is None:                         # natural: <cal-root>/<name>/
+        opts.out_dir = os.path.join(opts.cal_root, opts.name)
     os.makedirs(opts.out_dir, exist_ok=True)
     cal = analyze(layout, photos, name=opts.name,
                   ref_floor_frac=opts.ref_floor_frac, dark_frac=opts.dark_frac,
