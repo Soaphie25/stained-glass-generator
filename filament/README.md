@@ -251,8 +251,9 @@ python3 filament/mixture.py selftest
 - [x] Intense-filament detection + mix-fraction cap; printable-ratio LUT
 - [x] Colour LUT + gamut (`solve_recipe.py lut`); palette map (`map`)
 - [ ] Upgrade Delta-E CIE76 → CIEDE2000
-- [ ] **Browser GUI**: local server wrapping calibrate/map/lut, builds the CLI
-      commands and shows live previews (gamut, swatches, coverage)
+- [x] **Browser GUI** (`gui.py`): local stdlib server wrapping calibrate/map/lut,
+      bilingual (EN + 简体中文), shows the CLI command + previews + shot-quality
+      problems (`python3 filament/gui.py` → http://127.0.0.1:8000)
 - [ ] **Final**: SVG panes (`color_NN_<hex>`) → LUT lookup → per-pane recipe →
       one Bambu color-mix 3MF with every pane's colour embedded (reuses
       `bambu_mix3mf.py`)
