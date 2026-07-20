@@ -176,6 +176,36 @@ def do_filaments(data):
     return {"filaments": _filaments()}
 
 
+def _attach_pad(res, d):
+    import glob as _g
+    tmf = sorted(_g.glob(os.path.join(ROOT, d, "*.3mf")))
+    if tmf:
+        res["download"] = os.path.relpath(tmf[0], ROOT)
+    pv = sorted(_g.glob(os.path.join(ROOT, d, "*preview*.png")))
+    if pv:
+        res["images"] = [os.path.relpath(pv[0], ROOT)]
+    return res
+
+
+def do_genpad(data):
+    args = ["python3", "filament/make_calibration_pad.py",
+            "--screen-w-mm", str(data.get("w") or 64),
+            "--screen-h-mm", str(data.get("h") or 138),
+            "--step-mm", str(data.get("step") or 0.2)]
+    rc, out, err = sh(args)
+    return _attach_pad({"ok": rc == 0, "cmd": " ".join(args), "stdout": out,
+                        "stderr": err}, "filament/pad")
+
+
+def do_genmixpad(data):
+    args = ["python3", "filament/make_mixture_pad.py",
+            "--screen-w-mm", str(data.get("w") or 64),
+            "--screen-h-mm", str(data.get("h") or 138)]
+    rc, out, err = sh(args)
+    return _attach_pad({"ok": rc == 0, "cmd": " ".join(args), "stdout": out,
+                        "stderr": err}, "filament/mixpad")
+
+
 def do_map(data):
     rc, out, err = sh(["python3", "filament/solve_recipe.py", "map"])
     return {"ok": rc == 0, "stdout": out, "stderr": err,
@@ -193,6 +223,7 @@ def do_lut(data):
 
 
 POST = {"/analyze": do_analyze, "/mixfit": do_mixfit, "/filaments": do_filaments,
+        "/genpad": do_genpad, "/genmixpad": do_genmixpad,
         "/map": do_map, "/lut": do_lut}
 
 
@@ -234,8 +265,15 @@ PAGE = """<!doctype html><html><head><meta charset=utf-8>
 </div>
 
 <div id=cal class="panel on">
+ <fieldset><legend>① Generate calibration pad&nbsp;·&nbsp;生成标定板</legend>
+  <div class=row>screen 屏幕 <input type=number id=cp_w value=64 style="width:60px"> × <input type=number id=cp_h value=138 style="width:60px"> mm
+   &nbsp;&nbsp; step 步长 / 层高 <input type=number id=cp_step value=0.2 step=0.1 style="width:60px"> mm</div>
+  <div class=row style="color:#777;font-size:12px">Sized to fit inside your phone/tablet screen; the step MUST equal your print layer height.<br>尺寸需适配你的手机/平板屏幕；步长必须等于打印层高。</div>
+  <div class=row><button class=go onclick="genPad('/genpad','cp')">Generate 3MF 生成</button> <span id=cp_status></span></div>
+  <div id=cp_result></div>
+ </fieldset>
  <div class=req>__REQ__</div>
- <fieldset><legend>Calibrate a filament&nbsp;·&nbsp;校准一种耗材</legend>
+ <fieldset><legend>② Calibrate a filament&nbsp;·&nbsp;校准一种耗材</legend>
   <div class=row><label>name 名称</label><input type=text id=c_name placeholder="e.g. amber 例：琥珀">
     <label style="min-width:110px">layer 层高 (mm)</label><input type=number id=c_layer value="0.2" step="0.1" style="width:70px"></div>
   <div class=row><label>white 白 *</label><input type=file id=f_white accept="image/*,.dng,.arw,.cr2,.nef,.raf"></div>
@@ -253,7 +291,13 @@ PAGE = """<!doctype html><html><head><meta charset=utf-8>
 • Print the 11-pad mixture ramp with filament A in slot 1 and B in slot 2, then photograph it over WHITE (same exposure rules as above).
   用 A 放 1 号、B 放 2 号打印 11 格混色渐变板，再在白屏下拍摄（曝光要求同上）。
 • Both filaments must already be calibrated (tab 1).  两种耗材都需先在「单色校准」完成。</div>
- <fieldset><legend>Calibrate a 2-colour mixture&nbsp;·&nbsp;校准双色混合</legend>
+ <fieldset><legend>① Generate mixture pad&nbsp;·&nbsp;生成混色渐变板</legend>
+  <div class=row>screen 屏幕 <input type=number id=mp_w value=64 style="width:60px"> × <input type=number id=mp_h value=138 style="width:60px"> mm</div>
+  <div class=row style="color:#777;font-size:12px">11-pad ramp A→B; load filament A in slot 1, B in slot 2 in the slicer.<br>11 格 A→B 渐变；切片时 A 放 1 号槽、B 放 2 号槽。</div>
+  <div class=row><button class=go onclick="genPad('/genmixpad','mp')">Generate 3MF 生成</button> <span id=mp_status></span></div>
+  <div id=mp_result></div>
+ </fieldset>
+ <fieldset><legend>② Calibrate a 2-colour mixture&nbsp;·&nbsp;校准双色混合</legend>
   <div class=row><label>A (slot 1)</label><select id=mx_a></select>
     <label style="min-width:90px">B (slot 2)</label><select id=mx_b></select>
     <button onclick="loadFils()" style="margin-left:8px">↻ refresh 刷新</button></div>
@@ -287,6 +331,16 @@ function tab(id,b){document.querySelectorAll('.panel').forEach(p=>p.classList.re
 function f2b64(f){return new Promise(r=>{const x=new FileReader();x.onload=()=>r({filename:f.name,b64:x.result});x.readAsDataURL(f);});}
 function img(p){return '<img class=prev src="/img?path='+encodeURIComponent(p)+'&t='+Date.now()+'">';}
 async function post(url,body){const r=await fetch(url,{method:'POST',body:JSON.stringify(body||{})});return r.json();}
+async function genPad(url,pfx){const st=document.getElementById(pfx+'_status');st.textContent='running…';
+ document.getElementById(pfx+'_result').innerHTML='';
+ const body={w:document.getElementById(pfx+'_w').value,h:document.getElementById(pfx+'_h').value};
+ const se=document.getElementById(pfx+'_step');if(se)body.step=se.value;
+ const r=await post(url,body);st.textContent='';
+ let h=r.ok?'<div class=done>✓ pad generated · 已生成标定板</div>':'<div class=warn><pre class=out>'+(r.stderr||r.stdout||'')+'</pre></div>';
+ if(r.download){const fn=r.download.split('/').pop();
+   h+='<div class=row style="margin-top:6px"><a class=go style="text-decoration:none;padding:8px 14px" href="/file?path='+encodeURIComponent(r.download)+'" download>⬇ Download '+fn+' 下载</a> &nbsp; <span style="color:#555">open in Bambu Studio &amp; print · 用 Bambu Studio 打开并打印</span></div>';}
+ if(r.images)r.images.forEach(p=>h+=img(p));
+ document.getElementById(pfx+'_result').innerHTML=h;}
 
 async function analyze(){
  const btn=document.getElementById('c_go');btn.disabled=true;
@@ -398,6 +452,21 @@ class Handler(BaseHTTPRequestHandler):
             base = os.path.join(ROOT, "filament")
             if full.startswith(base) and os.path.isfile(full):
                 self._send(200, "image/png", open(full, "rb").read())
+            else:
+                self._send(404, "text/plain", b"not found")
+        elif u.path == "/file":                      # download (e.g. the .3mf)
+            rel = parse_qs(u.query).get("path", [""])[0]
+            full = os.path.normpath(os.path.join(ROOT, rel))
+            base = os.path.join(ROOT, "filament")
+            if full.startswith(base) and os.path.isfile(full):
+                body = open(full, "rb").read()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Disposition",
+                                 'attachment; filename="%s"' % os.path.basename(full))
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
             else:
                 self._send(404, "text/plain", b"not found")
         else:
