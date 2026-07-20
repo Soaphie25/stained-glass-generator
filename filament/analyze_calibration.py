@@ -1197,12 +1197,23 @@ def main(argv=None):
                   ref_floor_frac=opts.ref_floor_frac, dark_frac=opts.dark_frac,
                   max_dim=opts.max_dim, blur_frac=opts.blur, layer_mm=opts.layer_mm,
                   diag_dir=opts.out_dir)
-    out = os.path.join(opts.out_dir, "calibration.json")
+    # A pad/layout mismatch means the cells were sampled in the wrong places, so
+    # the numbers are bogus -- DON'T let it clobber a good calibration.json; write
+    # a quarantined *_INVALID.json instead.
+    invalid = any("PAD MISMATCH" in w for w in cal.get("warnings", []))
+    out = os.path.join(opts.out_dir,
+                       "calibration_INVALID.json" if invalid else "calibration.json")
     with open(out, "w") as f:
         json.dump(cal, f, indent=2)
     sys.stderr.write("filament '%s': primary absorption per mm = %s\n"
                      % (opts.name, cal["primary_absorption_per_mm"]))
-    sys.stderr.write("wrote %s (+ detect_*.png, curves.png)\n" % out)
+    if invalid:
+        sys.stderr.write("!! PAD MISMATCH -- result is INVALID, NOT saved as a "
+                         "calibration. Wrote %s; any existing calibration.json is "
+                         "untouched. Reprint from the current make_calibration_pad."
+                         "py and reshoot.\n" % out)
+    else:
+        sys.stderr.write("wrote %s (+ detect_*.png, curves.png)\n" % out)
     rel = cal["reliability"]
     sys.stderr.write("\nfilament class: %s\n" % rel["filament_class"].upper())
     for c in ("R", "G", "B"):

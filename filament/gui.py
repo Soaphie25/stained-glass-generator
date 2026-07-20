@@ -70,8 +70,26 @@ def sh(args):
 
 
 def _read_cal(name):
-    path = os.path.join(ROOT, CALROOT, name, "calibration.json")
-    return json.load(open(path)) if os.path.isfile(path) else None
+    """Read the most-recent result for <name> -- prefer a fresh INVALID (pad
+    mismatch) shot so the GUI shows it, without clobbering a good calibration."""
+    d = os.path.join(ROOT, CALROOT, name)
+    cands = [os.path.join(d, f) for f in
+             ("calibration.json", "calibration_INVALID.json")]
+    cands = [p for p in cands if os.path.isfile(p)]
+    if not cands:
+        return None
+    return json.load(open(max(cands, key=os.path.getmtime)))
+
+
+def _filaments():
+    """Names of calibrated filaments (folders with a calibration.json)."""
+    out = []
+    d = os.path.join(ROOT, CALROOT)
+    if os.path.isdir(d):
+        for n in sorted(os.listdir(d)):
+            if os.path.isfile(os.path.join(d, n, "calibration.json")):
+                out.append(n)
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -125,6 +143,35 @@ def do_analyze(data):
     return res
 
 
+def do_mixfit(data):
+    a, b = (data.get("a") or "").strip(), (data.get("b") or "").strip()
+    if not a or not b or a == b:
+        return {"ok": False, "stderr": "pick two DIFFERENT calibrated filaments "
+                                       "请选择两种不同的已校准耗材"}
+    f = data.get("file")
+    if not f:
+        return {"ok": False, "stderr": "pick the mixture-pad WHITE photo "
+                                       "请选择混色标定板的白屏照片"}
+    stage = os.path.join(UPLOADS, "mix_%s_%s" % (a, b))
+    os.makedirs(os.path.join(ROOT, stage), exist_ok=True)
+    ext = os.path.splitext(f.get("filename", ""))[1] or ".dng"
+    rel = os.path.join(stage, "white" + ext)
+    with open(os.path.join(ROOT, rel), "wb") as fh:
+        fh.write(base64.b64decode(f["b64"].split(",")[-1]))
+    args = ["python3", "filament/mixture.py", "fit", "--layout", MIX_LAYOUT,
+            "--white", rel, "--cal-root", CALROOT,
+            "--a", "%s=%s/%s/calibration.json" % (a, CALROOT, a),
+            "--b", "%s=%s/%s/calibration.json" % (b, CALROOT, b)]
+    rc, out, err = sh(args)
+    res = {"ok": rc == 0, "cmd": " ".join(args), "stdout": out, "stderr": err,
+           "pair": "+".join(sorted((a, b)))}
+    return res
+
+
+def do_filaments(data):
+    return {"filaments": _filaments()}
+
+
 def do_map(data):
     rc, out, err = sh(["python3", "filament/solve_recipe.py", "map"])
     return {"ok": rc == 0, "stdout": out, "stderr": err,
@@ -141,7 +188,8 @@ def do_lut(data):
             "images": ["%s/gamut.png" % CALROOT]}
 
 
-POST = {"/analyze": do_analyze, "/map": do_map, "/lut": do_lut}
+POST = {"/analyze": do_analyze, "/mixfit": do_mixfit, "/filaments": do_filaments,
+        "/map": do_map, "/lut": do_lut}
 
 
 # --------------------------------------------------------------------------- #
@@ -175,9 +223,10 @@ PAGE = """<!doctype html><html><head><meta charset=utf-8>
 </style></head><body>
 <header>Filament calibration &amp; colour&nbsp;LUT&nbsp;&nbsp;·&nbsp;&nbsp;耗材校准与色彩查找表</header>
 <div class=tabs>
- <button class="on" onclick="tab('cal',this)">1 · Calibrate 校准</button>
- <button onclick="tab('map',this)">2 · Palette map 色板</button>
- <button onclick="tab('lut',this)">3 · Colour LUT 查找表</button>
+ <button class="on" onclick="tab('cal',this)">1 · Calibrate 单色校准</button>
+ <button onclick="tab('mix',this)">2 · Mixture 混色校准</button>
+ <button onclick="tab('map',this)">3 · Palette map 色板</button>
+ <button onclick="tab('lut',this)">4 · Colour LUT 查找表</button>
 </div>
 
 <div id=cal class="panel on">
@@ -193,6 +242,21 @@ PAGE = """<!doctype html><html><head><meta charset=utf-8>
   <div class=row><button class=go id=c_go onclick="analyze()">Analyze 分析</button> <span id=c_status></span></div>
  </fieldset>
  <div id=c_cmd></div><div id=c_result></div>
+</div>
+
+<div id=mix class="panel">
+ <div class=req>Calibrates the sub-layer mixing of a PAIR (fits per-filament σ).  校准两种耗材的分层混色（拟合每种耗材的 σ）。
+• Print the 11-pad mixture ramp with filament A in slot 1 and B in slot 2, then photograph it over WHITE (same exposure rules as above).
+  用 A 放 1 号、B 放 2 号打印 11 格混色渐变板，再在白屏下拍摄（曝光要求同上）。
+• Both filaments must already be calibrated (tab 1).  两种耗材都需先在「单色校准」完成。</div>
+ <fieldset><legend>Calibrate a 2-colour mixture&nbsp;·&nbsp;校准双色混合</legend>
+  <div class=row><label>A (slot 1)</label><select id=mx_a></select>
+    <label style="min-width:90px">B (slot 2)</label><select id=mx_b></select>
+    <button onclick="loadFils()" style="margin-left:8px">↻ refresh 刷新</button></div>
+  <div class=row><label>white 白 *</label><input type=file id=mx_file accept="image/*,.dng,.arw,.cr2,.nef,.raf"> <span style="color:#777;font-size:12px">mixture-pad photo over white 混色板白屏照片</span></div>
+  <div class=row><button class=go id=mx_go onclick="mixfit()">Fit σ 拟合</button> <span id=mx_status></span></div>
+ </fieldset>
+ <div id=mx_cmd></div><div id=mx_result></div>
 </div>
 
 <div id=map class="panel">
@@ -268,6 +332,25 @@ const WARN_CN=[['SKIPPED','已跳过该照片：未找到标记点（该背光�
  ['FULLY ABSORBED','该通道完全吸收：数值为下界（正常，混色中读数≈0）'],
  ['NOISY','拟合噪声过大：疑似 ISO 高/抖动/反光，请暗室、低 ISO、稳定拍摄']];
 function cnGloss(w){const u=w.toUpperCase();for(const [k,v] of WARN_CN)if(u.includes(k))return v;return '';}
+async function loadFils(){const r=await post('/filaments',{});const fs=r.filaments||[];
+ for(const id of ['mx_a','mx_b']){const s=document.getElementById(id);const cur=s.value;
+   s.innerHTML=fs.map(f=>'<option'+(f==cur?' selected':'')+'>'+f+'</option>').join('');}
+ if(fs.length>1&&document.getElementById('mx_b').selectedIndex==document.getElementById('mx_a').selectedIndex)document.getElementById('mx_b').selectedIndex=1;}
+async function mixfit(){const btn=document.getElementById('mx_go');btn.disabled=true;
+ document.getElementById('mx_status').textContent='running…';
+ document.getElementById('mx_result').innerHTML='';document.getElementById('mx_cmd').innerHTML='';
+ const el=document.getElementById('mx_file');const file=el.files[0]?await f2b64(el.files[0]):null;
+ const res=await post('/mixfit',{a:document.getElementById('mx_a').value,b:document.getElementById('mx_b').value,file});
+ btn.disabled=false;document.getElementById('mx_status').textContent='';
+ if(res.cmd)document.getElementById('mx_cmd').innerHTML='<div class=cmd>'+res.cmd+'</div>';
+ let h='';
+ if(!res.ok){h+='<div class=warn><b>failed 失败:</b><br><pre class=out>'+(res.stderr||'')+'</pre></div>';}
+ else{h+='<div class=done>✓ σ fitted · σ 拟合完成 &nbsp;→ filament/calibration/mix/'+res.pair+'/</div>';
+   // pull the model vs baseline dE summary lines
+   const t=res.stdout||'',m=t.match(/model.*dE.*/i),b=t.match(/baseline.*dE.*/i);
+   if(m||b)h+='<div class=ok>'+[m,b].filter(Boolean).map(x=>x[0]).join('<br>')+'<br><span style="color:#555">lower model ΔE = better; the pair is now a direct posterior in the LUT. 模型 ΔE 越低越好，该组合已作为直接后验进入查找表。</span></div>';
+   h+='<pre class=out>'+t+'</pre>';}
+ document.getElementById('mx_result').innerHTML=h;}
 async function runMap(){document.getElementById('m_status').textContent='running…';
  const r=await post('/map',{});document.getElementById('m_status').textContent='';
  let h='<pre class=out>'+(r.stdout||r.stderr||'')+'</pre>';if(r.images)r.images.forEach(p=>h+=img(p));
@@ -284,6 +367,7 @@ async function matchHex(){const hx=document.getElementById('l_hex').value.trim()
  while((m2=re.exec(txt))){h+='<div style="margin:8px 0"><span class=sw style="background:#'+m2[1]+'"></span>'+
    '<span class=sw style="background:#'+m2[2]+'"></span> target #'+m2[1]+' → #'+m2[2]+' &nbsp; ΔE '+m2[3]+' &nbsp; <b>'+m2[4]+'</b></div>';}
  document.getElementById('l_match').innerHTML=h||'<pre class=out>'+txt+'</pre>';}
+loadFils();   // populate mixture dropdowns on load
 </script></body></html>"""
 
 
