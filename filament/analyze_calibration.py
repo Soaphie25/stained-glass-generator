@@ -512,13 +512,15 @@ def _quality_warnings(screens):
     out = []
     for s, d in screens.items():
         da, ea = d.get("marker_aspect"), d.get("expected_aspect")
-        if da and ea and abs(da - ea) / ea > 0.02:
-            out.append("[%s] PAD MISMATCH: detected marker-rectangle aspect %.3f "
-                       "vs layout %.3f -- this pad does not match --layout (wrong "
-                       "pad version?) or is badly tilted. Cells sample the wrong "
-                       "spots, so absorption is bogus. Reprint from the current "
-                       "make_calibration_pad.py, or pass the matching layout, or "
-                       "reshoot flat + square-on." % (s, da, ea))
+        if da and ea and abs(da - ea) / ea > 0.025:
+            out.append("[%s] PAD MISMATCH: marker-rectangle aspect %.3f vs layout "
+                       "%.3f. Most likely the pad isn't sitting FLAT or the shot is "
+                       "TILTED -- press the pad flat against the screen and shoot "
+                       "square-on, then re-analyse. (The cells sample the wrong "
+                       "spots when it's tilted, so the absorption is off.) If it "
+                       "persists after a flat, square-on reshoot, the pad is a "
+                       "different make_calibration_pad version -- reprint from the "
+                       "current one." % (s, da, ea))
         mr, clip = d.get("max_ref", 1.0), d.get("clip_frac", 0.0)
         if mr < 0.25:
             out.append("[%s] UNDER-EXPOSED: brightest reference is only %.0f%% of "

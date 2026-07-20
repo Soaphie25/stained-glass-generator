@@ -296,9 +296,9 @@ async function analyze(){
  let h='';
  const badpad=(res.warnings||[]).some(w=>/PAD MISMATCH/i.test(w));
  if(!res.ok){h+='<div class=warn><b>failed 失败:</b><br><pre class=out>'+(res.stderr||'')+'</pre></div>';}
- else if(badpad){h+='<div class=warn><b>✗ INVALID — pad does not match the layout · 无效：标定板与布局不匹配</b><br>'+
-   'The cells were sampled in the wrong places, so the numbers below are bogus. This pad was printed from a different/older make_calibration_pad version. Reprint the pad from the CURRENT make_calibration_pad.py (the one that made your red/blue pads) and reshoot.<br>'+
-   '格子采样位置错误，下面的数值无效。此标定板来自不同/更旧的生成器版本。请用当前的 make_calibration_pad.py（与红/蓝板相同）重打后重拍。</div>';}
+ else if(badpad){h+='<div class=warn><b>✗ INVALID — pad/shot doesn\\'t match the layout · 无效：标定板/拍摄与布局不匹配</b><br>'+
+   'Most likely the pad isn\\'t lying FLAT or the shot is TILTED, so the cells were sampled in the wrong spots (numbers below are bogus). Press the pad flat against the screen, shoot square-on, and re-analyse. Only if it persists is the pad a different make_calibration_pad version (reprint).<br>'+
+   '多半是标定板没铺平或拍摄倾斜，导致采样位置错误（下方数值无效）。请把板压平贴屏、正对镜头重拍后再分析。若仍不匹配，才是标定板版本不同（需重打）。</div>';}
  else if(res.primary){h+='<div class=done>✓ calibrated · 校准成功 &nbsp;→ filament/calibration/'+(document.getElementById('c_name').value||'filament')+'/</div>';}
  const rel=res.reliability;
  if(res.primary&&!badpad){h+='<div class=ok><b>absorption /mm · 吸收系数</b> &nbsp; R '+res.primary.R+' &nbsp; G '+res.primary.G+' &nbsp; B '+res.primary.B+'</div>';}
