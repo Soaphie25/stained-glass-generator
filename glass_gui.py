@@ -59,7 +59,7 @@ _SVG_OPTS = ("max-size-mm", "px-mm", "num-colors", "black-block-mm",
              "line-width", "line-width-scale", "tier-thin", "tier-bold",
              "lum-threshold", "alpha-min", "fit-tolerance", "simplify-tolerance",
              "smooth-tolerance", "min-fragment-area", "color-merge-tol",
-             "min-line-width")
+             "min-line-width", "link-angle", "link-width-ratio")
 _SVG_FLAGS = ("smooth-curves", "merge-leading")
 
 
@@ -216,6 +216,9 @@ PAGE = r"""<!doctype html><html><head><meta charset=utf-8>
    lum-threshold <input type=number id=o_lum value=90 style="width:60px">
    min-fragment-area <input type=number id=o_minfrag value=32 style="width:60px">
    color-merge-tol <input type=number id=o_mergetol value=8 style="width:60px">
+   alpha-min <input type=number id=o_alpha value=128 style="width:60px">
+   link-angle <input type=number id=o_linkangle value=35 style="width:60px">
+   link-width-ratio <input type=number id=o_linkratio value=1.7 step=0.1 style="width:60px">
    &nbsp; <label><input type=checkbox id=o_smooth> smooth-curves 平滑曲线铅线</label>
    <label><input type=checkbox id=o_mergelead> merge-leading 合并铅线</label></div>
  </details>
@@ -247,7 +250,8 @@ function svgOpts(){const m=$('o_leadmode').value;
  const o={'max-size-mm':$('o_size').value,'num-colors':$('o_colors').value,
   'line-width':(m==='width'?$('o_leadwidth').value:m),'px-mm':$('o_pxmm').value,
   'black-block-mm':$('o_blackblock').value,'lum-threshold':$('o_lum').value,
-  'min-fragment-area':$('o_minfrag').value,'color-merge-tol':$('o_mergetol').value};
+  'min-fragment-area':$('o_minfrag').value,'color-merge-tol':$('o_mergetol').value,
+  'alpha-min':$('o_alpha').value,'link-angle':$('o_linkangle').value,'link-width-ratio':$('o_linkratio').value};
  if(m==='tier'){o['tier-bold']=$('o_tierbold').value;o['tier-thin']=$('o_tierthin').value;}
  return o;}
 function svgFlags(){return {'smooth-curves':$('o_smooth').checked,'merge-leading':$('o_mergelead').checked};}
