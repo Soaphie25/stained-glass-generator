@@ -117,11 +117,42 @@ def do_analyze(data):
         used.append(scr)
     if not used:
         return {"ok": False, "stderr": "pick at least a WHITE photo", "cmd": ""}
+    mk = data.get("markers")                          # hand-picked corners (orig px)
+    if mk and len(mk) == 4:
+        args += ["--markers", ";".join("%.1f,%.1f" % (p[0], p[1]) for p in mk)]
     rc, out, err = sh(args)
     res = {"ok": rc == 0, "cmd": " ".join(args), "stdout": out, "stderr": err,
            "used": used}
     res.update(_cal_payload(name))
     return res
+
+
+def do_decode(data):
+    """Decode an uploaded RAW/image -> a small JPEG the browser can show, for
+    hand-picking corner markers.  Returns a data URL + original + display sizes."""
+    f = data.get("file")
+    if not f:
+        return {"ok": False, "stderr": "no file"}
+    import io
+    import base64 as b64
+    import analyze_calibration as A
+    from PIL import Image
+    os.makedirs(os.path.join(ROOT, UPLOADS), exist_ok=True)
+    ext = os.path.splitext(f.get("filename", ""))[1] or ".dng"
+    tmp = os.path.join(ROOT, UPLOADS, "_decode" + ext)
+    with open(tmp, "wb") as fh:
+        fh.write(b64.b64decode(f["b64"].split(",")[-1]))
+    try:
+        arr = A._load_photo(tmp)
+    except Exception as e:
+        return {"ok": False, "stderr": "decode failed: %s" % e}
+    H, W = arr.shape[:2]
+    s = 900.0 / max(W, H)
+    im = Image.fromarray(arr).resize((max(1, int(W * s)), max(1, int(H * s))))
+    buf = io.BytesIO()
+    im.save(buf, "JPEG", quality=82)
+    return {"ok": True, "orig": [W, H], "disp": [im.width, im.height],
+            "jpeg": "data:image/jpeg;base64," + b64.b64encode(buf.getvalue()).decode()}
 
 
 def _cal_payload(name):
@@ -266,7 +297,8 @@ def do_lut(data):
             "images": ["%s/gamut.png" % CALROOT]}
 
 
-POST = {"/analyze": do_analyze, "/mixfit": do_mixfit, "/filaments": do_filaments,
+POST = {"/analyze": do_analyze, "/decode": do_decode,
+        "/mixfit": do_mixfit, "/filaments": do_filaments,
         "/loadcal": do_loadcal, "/mixtures": do_mixtures, "/loadmix": do_loadmix,
         "/genpad": do_genpad, "/genmixpad": do_genmixpad,
         "/map": do_map, "/lut": do_lut}
@@ -326,6 +358,9 @@ PAGE = """<!doctype html><html><head><meta charset=utf-8>
   <div class=row><label>green 绿</label><input type=file id=f_green accept="image/*,.dng,.arw,.cr2,.nef,.raf"></div>
   <div class=row><label>blue 蓝</label><input type=file id=f_blue accept="image/*,.dng,.arw,.cr2,.nef,.raf"></div>
   <div class=row style="color:#777;font-size:12px">White alone is enough for a normal filament; add colour screens only for an intense one.<br>普通耗材只需白屏；仅强吸收耗材需要额外的彩色背光。</div>
+  <div class=row><button onclick="pickMarkers()">◈ Pick markers manually 手动标记角点</button>
+    <span style="color:#777;font-size:12px">use if auto-detect grabs the wrong squares (e.g. a black border) · 自动识别选错方块（如黑边框）时使用</span></div>
+  <div id=mk_area></div>
   <div class=row><button class=go id=c_go onclick="analyze()">Analyze 分析</button> <span id=c_status></span></div>
  </fieldset>
  <fieldset><legend>③ View a calibrated filament&nbsp;·&nbsp;查看已校准耗材</legend>
@@ -398,13 +433,33 @@ async function genPad(url,pfx){const st=document.getElementById(pfx+'_status');s
  if(r.images)r.images.forEach(p=>h+=img(p));
  document.getElementById(pfx+'_result').innerHTML=h;}
 
+let MK=[], MK_ORIG=null, MK_DISP=null, MK_IMG=null;
+async function pickMarkers(){const el=document.getElementById('f_white');
+ if(!el.files[0]){alert('pick the WHITE photo first 请先选择白屏照片');return;}
+ document.getElementById('mk_area').innerHTML='decoding… 解码中…';
+ const r=await post('/decode',{file:await f2b64(el.files[0])});
+ if(!r.ok){document.getElementById('mk_area').innerHTML='<div class=warn>'+(r.stderr||'decode failed')+'</div>';return;}
+ MK=[];MK_ORIG=r.orig;MK_DISP=r.disp;
+ document.getElementById('mk_area').innerHTML='<div class=info>Click the 4 black corner markers (any order) · 点击 4 个黑色角标（顺序任意）</div>'+
+  '<canvas id=mkc style="border:1px solid #ccc;max-width:100%;cursor:crosshair"></canvas> <button onclick="clearMk()">clear 清除</button> <span id=mkinfo style="color:#555"></span>';
+ const c=document.getElementById('mkc'),im=new Image();
+ im.onload=()=>{c.width=im.width;c.height=im.height;MK_IMG=im;c.getContext('2d').drawImage(im,0,0);
+  c.onclick=(e)=>{const b=c.getBoundingClientRect();const x=(e.clientX-b.left)*c.width/b.width,y=(e.clientY-b.top)*c.height/b.height;
+   if(MK.length<4){MK.push([x,y]);drawMk();}};};
+ im.src=r.jpeg;}
+function drawMk(){const c=document.getElementById('mkc'),ctx=c.getContext('2d');ctx.drawImage(MK_IMG,0,0);
+ MK.forEach((p,i)=>{ctx.fillStyle='#e0f';ctx.beginPath();ctx.arc(p[0],p[1],7,0,7);ctx.fill();ctx.fillStyle='#fff';ctx.font='12px sans-serif';ctx.fillText(i+1,p[0]-3,p[1]+4);});
+ document.getElementById('mkinfo').textContent=MK.length+'/4'+(MK.length===4?' ✓ ready 就绪':'');}
+function clearMk(){MK=[];if(MK_IMG)document.getElementById('mkc').getContext('2d').drawImage(MK_IMG,0,0);document.getElementById('mkinfo').textContent='0/4';}
 async function analyze(){
  const btn=document.getElementById('c_go');btn.disabled=true;
  document.getElementById('c_status').textContent='running…';
  document.getElementById('c_result').innerHTML='';document.getElementById('c_cmd').innerHTML='';
  const files={};
  for(const s of ['white','red','green','blue']){const el=document.getElementById('f_'+s);if(el.files[0])files[s]=await f2b64(el.files[0]);}
- const res=await post('/analyze',{name:document.getElementById('c_name').value,layer:document.getElementById('c_layer').value,files});
+ let markers=null;
+ if(MK.length===4&&MK_ORIG&&MK_DISP){markers=MK.map(p=>[p[0]/MK_DISP[0]*MK_ORIG[0],p[1]/MK_DISP[1]*MK_ORIG[1]]);}
+ const res=await post('/analyze',{name:document.getElementById('c_name').value,layer:document.getElementById('c_layer').value,files,markers});
  btn.disabled=false;document.getElementById('c_status').textContent='';
  if(res.cmd)document.getElementById('c_cmd').innerHTML='<div class=cmd>'+res.cmd+'</div>';
  renderCal(res,'c_result');
