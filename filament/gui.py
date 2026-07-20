@@ -237,6 +237,9 @@ def do_mixfit(data):
             "--white", rel, "--cal-root", CALROOT,
             "--a", "%s=%s/%s/calibration.json" % (a, CALROOT, a),
             "--b", "%s=%s/%s/calibration.json" % (b, CALROOT, b)]
+    mk = data.get("markers")
+    if mk and len(mk) == 4:
+        args += ["--markers", ";".join("%.1f,%.1f" % (p[0], p[1]) for p in mk)]
     rc, out, err = sh(args)
     pair = "+".join(sorted((a, b)))
     res = {"ok": rc == 0, "cmd": " ".join(args), "stdout": out, "stderr": err,
@@ -358,7 +361,7 @@ PAGE = """<!doctype html><html><head><meta charset=utf-8>
   <div class=row><label>green 绿</label><input type=file id=f_green accept="image/*,.dng,.arw,.cr2,.nef,.raf"></div>
   <div class=row><label>blue 蓝</label><input type=file id=f_blue accept="image/*,.dng,.arw,.cr2,.nef,.raf"></div>
   <div class=row style="color:#777;font-size:12px">White alone is enough for a normal filament; add colour screens only for an intense one.<br>普通耗材只需白屏；仅强吸收耗材需要额外的彩色背光。</div>
-  <div class=row><button onclick="pickMarkers()">◈ Pick markers manually 手动标记角点</button>
+  <div class=row><button onclick="pickMarkers('cal','f_white','mk_area')">◈ Pick markers manually 手动标记角点</button>
     <span style="color:#777;font-size:12px">use if auto-detect grabs the wrong squares (e.g. a black border) · 自动识别选错方块（如黑边框）时使用</span></div>
   <div id=mk_area></div>
   <div class=row><button class=go id=c_go onclick="analyze()">Analyze 分析</button> <span id=c_status></span></div>
@@ -387,6 +390,9 @@ PAGE = """<!doctype html><html><head><meta charset=utf-8>
     <label style="min-width:90px">B (slot 2)</label><select id=mx_b></select>
     <button onclick="loadFils()" style="margin-left:8px">↻ refresh 刷新</button></div>
   <div class=row><label>white 白 *</label><input type=file id=mx_file accept="image/*,.dng,.arw,.cr2,.nef,.raf"> <span style="color:#777;font-size:12px">mixture-pad photo over white 混色板白屏照片</span></div>
+  <div class=row><button onclick="pickMarkers('mix','mx_file','mx_mk_area')">◈ Pick markers manually 手动标记角点</button>
+    <span style="color:#777;font-size:12px">if auto-detect fails · 自动识别失败时使用</span></div>
+  <div id=mx_mk_area></div>
   <div class=row><button class=go id=mx_go onclick="mixfit()">Fit σ 拟合</button> <span id=mx_status></span></div>
  </fieldset>
  <fieldset><legend>③ View a calibrated mixture&nbsp;·&nbsp;查看已校准混色</legend>
@@ -433,33 +439,33 @@ async function genPad(url,pfx){const st=document.getElementById(pfx+'_status');s
  if(r.images)r.images.forEach(p=>h+=img(p));
  document.getElementById(pfx+'_result').innerHTML=h;}
 
-let MK=[], MK_ORIG=null, MK_DISP=null, MK_IMG=null;
-async function pickMarkers(){const el=document.getElementById('f_white');
- if(!el.files[0]){alert('pick the WHITE photo first 请先选择白屏照片');return;}
- document.getElementById('mk_area').innerHTML='decoding… 解码中…';
+const MKC={};   // context ('cal'/'mix') -> {MK, orig, disp, img}
+async function pickMarkers(ctx,fileId,areaId){const el=document.getElementById(fileId);
+ if(!el.files[0]){alert('pick the photo first 请先选择照片');return;}
+ document.getElementById(areaId).innerHTML='decoding… 解码中…';
  const r=await post('/decode',{file:await f2b64(el.files[0])});
- if(!r.ok){document.getElementById('mk_area').innerHTML='<div class=warn>'+(r.stderr||'decode failed')+'</div>';return;}
- MK=[];MK_ORIG=r.orig;MK_DISP=r.disp;
- document.getElementById('mk_area').innerHTML='<div class=info>Click the 4 black corner markers (any order) · 点击 4 个黑色角标（顺序任意）</div>'+
-  '<canvas id=mkc style="border:1px solid #ccc;max-width:100%;cursor:crosshair"></canvas> <button onclick="clearMk()">clear 清除</button> <span id=mkinfo style="color:#555"></span>';
- const c=document.getElementById('mkc'),im=new Image();
- im.onload=()=>{c.width=im.width;c.height=im.height;MK_IMG=im;c.getContext('2d').drawImage(im,0,0);
+ if(!r.ok){document.getElementById(areaId).innerHTML='<div class=warn>'+(r.stderr||'decode failed')+'</div>';return;}
+ const st={MK:[],orig:r.orig,disp:r.disp,img:null};MKC[ctx]=st;
+ const cid='mkc_'+ctx,iid='mki_'+ctx;
+ document.getElementById(areaId).innerHTML='<div class=info>Click the 4 black corner markers (any order) · 点击 4 个黑色角标（顺序任意）</div>'+
+  '<canvas id="'+cid+'" style="border:1px solid #ccc;max-width:100%;cursor:crosshair"></canvas> <button onclick="clearMk(\''+ctx+'\')">clear 清除</button> <span id="'+iid+'" style="color:#555"></span>';
+ const c=document.getElementById(cid),im=new Image();
+ im.onload=()=>{c.width=im.width;c.height=im.height;st.img=im;c.getContext('2d').drawImage(im,0,0);
   c.onclick=(e)=>{const b=c.getBoundingClientRect();const x=(e.clientX-b.left)*c.width/b.width,y=(e.clientY-b.top)*c.height/b.height;
-   if(MK.length<4){MK.push([x,y]);drawMk();}};};
+   if(st.MK.length<4){st.MK.push([x,y]);drawMk(ctx);}};};
  im.src=r.jpeg;}
-function drawMk(){const c=document.getElementById('mkc'),ctx=c.getContext('2d');ctx.drawImage(MK_IMG,0,0);
- MK.forEach((p,i)=>{ctx.fillStyle='#e0f';ctx.beginPath();ctx.arc(p[0],p[1],7,0,7);ctx.fill();ctx.fillStyle='#fff';ctx.font='12px sans-serif';ctx.fillText(i+1,p[0]-3,p[1]+4);});
- document.getElementById('mkinfo').textContent=MK.length+'/4'+(MK.length===4?' ✓ ready 就绪':'');}
-function clearMk(){MK=[];if(MK_IMG)document.getElementById('mkc').getContext('2d').drawImage(MK_IMG,0,0);document.getElementById('mkinfo').textContent='0/4';}
+function drawMk(ctx){const st=MKC[ctx],c=document.getElementById('mkc_'+ctx),g=c.getContext('2d');g.drawImage(st.img,0,0);
+ st.MK.forEach((p,i)=>{g.fillStyle='#e0f';g.beginPath();g.arc(p[0],p[1],7,0,7);g.fill();g.fillStyle='#fff';g.font='12px sans-serif';g.fillText(i+1,p[0]-3,p[1]+4);});
+ document.getElementById('mki_'+ctx).textContent=st.MK.length+'/4'+(st.MK.length===4?' ✓ ready 就绪':'');}
+function clearMk(ctx){const st=MKC[ctx];st.MK=[];if(st.img)document.getElementById('mkc_'+ctx).getContext('2d').drawImage(st.img,0,0);document.getElementById('mki_'+ctx).textContent='0/4';}
+function mkFor(ctx){const st=MKC[ctx];return (st&&st.MK.length===4)?st.MK.map(p=>[p[0]/st.disp[0]*st.orig[0],p[1]/st.disp[1]*st.orig[1]]):null;}
 async function analyze(){
  const btn=document.getElementById('c_go');btn.disabled=true;
  document.getElementById('c_status').textContent='running…';
  document.getElementById('c_result').innerHTML='';document.getElementById('c_cmd').innerHTML='';
  const files={};
  for(const s of ['white','red','green','blue']){const el=document.getElementById('f_'+s);if(el.files[0])files[s]=await f2b64(el.files[0]);}
- let markers=null;
- if(MK.length===4&&MK_ORIG&&MK_DISP){markers=MK.map(p=>[p[0]/MK_DISP[0]*MK_ORIG[0],p[1]/MK_DISP[1]*MK_ORIG[1]]);}
- const res=await post('/analyze',{name:document.getElementById('c_name').value,layer:document.getElementById('c_layer').value,files,markers});
+ const res=await post('/analyze',{name:document.getElementById('c_name').value,layer:document.getElementById('c_layer').value,files,markers:mkFor('cal')});
  btn.disabled=false;document.getElementById('c_status').textContent='';
  if(res.cmd)document.getElementById('c_cmd').innerHTML='<div class=cmd>'+res.cmd+'</div>';
  renderCal(res,'c_result');
@@ -524,7 +530,7 @@ async function mixfit(){const btn=document.getElementById('mx_go');btn.disabled=
  document.getElementById('mx_status').textContent='running…';
  document.getElementById('mx_result').innerHTML='';document.getElementById('mx_cmd').innerHTML='';
  const el=document.getElementById('mx_file');const file=el.files[0]?await f2b64(el.files[0]):null;
- const res=await post('/mixfit',{a:document.getElementById('mx_a').value,b:document.getElementById('mx_b').value,file});
+ const res=await post('/mixfit',{a:document.getElementById('mx_a').value,b:document.getElementById('mx_b').value,file,markers:mkFor('mix')});
  btn.disabled=false;document.getElementById('mx_status').textContent='';
  if(res.cmd)document.getElementById('mx_cmd').innerHTML='<div class=cmd>'+res.cmd+'</div>';
  let h='';

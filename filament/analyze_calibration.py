@@ -427,7 +427,7 @@ def _prep(rgb, max_dim, blur_frac, H_probe=None):
     return np.asarray(im)
 
 
-def _sample_cells_linear(layout, rgb0, max_dim, blur_frac):
+def _sample_cells_linear(layout, rgb0, max_dim, blur_frac, manual_markers=None):
     """Detect + warp + sample: returns per-cell and per-window LINEAR RGB (0..1),
     already normalised by the reference-window plane -> per-cell transmittance.
     Works on a thickness pad ('cells') or a mixture pad ('pads')."""
@@ -437,7 +437,13 @@ def _sample_cells_linear(layout, rgb0, max_dim, blur_frac):
     win_xy = np.array([[w["cx"], w["cy"]] for w in win], float)
 
     rgb = _prep(rgb0, max_dim, blur_frac)
-    H, corners = _locate(rgb, layout)
+    if manual_markers:                               # hand-picked corners (orig px)
+        sx, sy = rgb.shape[1] / rgb0.shape[1], rgb.shape[0] / rgb0.shape[0]
+        pts = [(x * sx, y * sy) for x, y in manual_markers]
+        H = _manual_H(layout, pts, rgb)
+        corners = [{"cx": x, "cy": y} for x, y in pts]
+    else:
+        H, corners = _locate(rgb, layout)
     c0 = cells[0]
     cpx = float(np.hypot(*(project(H, [(c0["cx"] + c0["w"] / 2, c0["cy"])])[0]
                            - project(H, [(c0["cx"] - c0["w"] / 2, c0["cy"])])[0])))

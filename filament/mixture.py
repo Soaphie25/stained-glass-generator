@@ -274,7 +274,13 @@ def run_fit(opts):
     if opts.out_dir is None:                          # natural: <root>/mix/<A>+<B>/
         opts.out_dir = os.path.join(opts.cal_root, "mix",
                                     "+".join(sorted((fA.name, fB.name))))
-    T = A._sample_cells_linear(layout, A._load_photo(opts.white), 1600, 0.03)[0]
+    mk = None
+    if getattr(opts, "markers", None):
+        mk = [tuple(float(v) for v in p.split(",")) for p in opts.markers.split(";")]
+        if len(mk) != 4:
+            raise SystemExit("error: --markers needs 4 'x,y' points")
+    T = A._sample_cells_linear(layout, A._load_photo(opts.white), 1600, 0.03,
+                               manual_markers=mk)[0]
     pads = layout["pads"]
     Tmm = layout["total_thickness_mm"]
 
@@ -342,6 +348,8 @@ def main(argv=None):
     ft.add_argument("--b", required=True, help="B filament: name=calibration.json")
     ft.add_argument("--cal-root", default="filament/calibration",
                     help="calibration root; result -> <root>/mix/<A>+<B>/")
+    ft.add_argument("--markers", help="bypass auto-detection with hand-picked "
+                    "corners: 'x1,y1;x2,y2;x3,y3;x4,y4' image px (any order)")
     ft.add_argument("--out-dir", default=None,
                     help="override output folder (default <cal-root>/mix/<A>+<B>)")
     opts = p.parse_args(argv)
