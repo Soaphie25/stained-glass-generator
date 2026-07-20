@@ -277,6 +277,23 @@ def run_fit(opts):
     T = A._sample_cells_linear(layout, A._load_photo(opts.white), 1600, 0.03)[0]
     pads = layout["pads"]
     Tmm = layout["total_thickness_mm"]
+
+    # The ramp is DIRECTIONAL (pad0 = pure A ... last pad = pure B).  Mixing A+B is
+    # symmetric, so a pad shot/loaded "backwards" (B..A), or --a/--b given swapped,
+    # has valid colours but a REVERSED ratio->pad mapping -> the fit is nonsense.
+    # We know the pure-A / pure-B colours from the single-filament cals, so match
+    # the two ENDS and flip the ramp if it's the wrong way round.
+    Tn = np.clip(np.asarray(T, float), 0, 1)
+    predA, predB = _baseline_tau(fA, fB, 0.0, Tmm), _baseline_tau(fA, fB, 1.0, Tmm)
+    fwd = delta_e(Tn[0], predA) + delta_e(Tn[-1], predB)
+    rev = delta_e(Tn[0], predB) + delta_e(Tn[-1], predA)
+    reversed_ramp = rev < fwd - 1e-6
+    if reversed_ramp:
+        Tn = Tn[::-1]
+        print("NOTE: mixture ramp looks REVERSED -- pad0 matches pure %s, not %s. "
+              "Flipped it to align with --a=%s / --b=%s (A+B mixing is symmetric)."
+              % (fB.name, fA.name, fA.name, fB.name))
+    T = Tn
     pair = {"A": fA.name, "B": fB.name,
             "ratios": [p["pct_b"] / 100.0 for p in pads],
             "tau": [[float(x) for x in T[i]] for i in range(len(pads))]}
