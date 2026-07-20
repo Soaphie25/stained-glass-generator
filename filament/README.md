@@ -59,17 +59,21 @@ Display the bundled standard primaries `filament/screens/{white,red,green,blue}.
 (pure sRGB #FFFFFF/#FF0000/#00FF00/#0000FF; regenerate at your screen's resolution
 with `python3 filament/make_screens.py --width W --height H`).
 
-Practical must-dos: turn OFF True Tone / Night Shift / auto-brightness, lock camera
-exposure & white balance (or shoot RAW), avoid glare.
+Practical must-dos: turn OFF True Tone / Night Shift / auto-brightness, avoid
+glare, shoot RAW. **Expose each screen colour on its own** — see below.
 
 **Shoot RAW (DNG/ARW/CR2/…) if you can** — it's linear and skips the phone's tone
 curve, which otherwise inflates the absorption ~40–60%. rawpy decodes it
 automatically (`pip install rawpy`). Reference exposure: ISO 100, dark room, screen
-at max **fixed** brightness, shutter set so the bare screen reads ~85–95% (bright
-but not clipped); if cells look too dark, lengthen the shutter rather than raising
-ISO, and lock ISO/shutter/WB across all four shots. `analyze` prints **shot-quality
-warnings** (under/over-exposure, noisy fits) with re-shoot tips if something's off. The bare screen showing
-through the gaps between cells is used to normalise out exposure/brightness.
+at max **fixed** brightness, shutter set so **that screen's** bare windows read
+~85–95% (bright but not clipped). **Set the shutter per colour, NOT one shutter for
+all four** — transmittance is cell ÷ bare-screen *within a single photo*, so the
+absolute level cancels and each colour should be exposed on its own; a blue screen
+is far dimmer than white, so a white-tuned shutter under-exposes it (lengthen the
+shutter, keep ISO low). WB is irrelevant — it cancels in the ratio, and RAW makes
+it moot. `analyze` prints **shot-quality warnings** and a per-screen exposure check
+(under/over-exposure, noisy fits) with re-shoot tips. The bare screen showing
+through the gaps between cells is what normalises out exposure/brightness.
 
 ### 3. Analyse the photos — `analyze_calibration.py`
 

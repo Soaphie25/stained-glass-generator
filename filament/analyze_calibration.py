@@ -262,6 +262,22 @@ def eval_plane(planes, xy):
 # --------------------------------------------------------------------------- #
 # Fit  ln T = b - a t   (weighted, returns a, b=intercept, T0, r2, n)
 # --------------------------------------------------------------------------- #
+def _floored_lower_bound(t_all, T_all):
+    """A fully-absorbed (black-through-even-the-thinnest-cell) channel: report a
+    LOWER BOUND on a from the thinnest cell.  Noise only ADDS light, so measured T
+    over-estimates true T -> a >= (ln T0 - ln T_thin)/t_thin is valid.  Flagged;
+    the exact value is unmeasurable (channel reads ~0 regardless)."""
+    finite = T_all[np.isfinite(T_all)]
+    i0 = int(np.argmin(t_all))
+    t_thin = max(float(t_all[i0]), 1e-6)
+    Tv = T_all[i0] if np.isfinite(T_all[i0]) else (
+        float(finite.min()) if finite.size else 5e-3)
+    T_thin = min(max(float(Tv), 5e-3), 0.15)
+    a_lb = (np.log(0.9) - np.log(T_thin)) / t_thin
+    return {"a": float(a_lb), "b": float(np.log(0.9)), "T0": 0.9,
+            "r2": 0.0, "n": int(finite.size), "floored": True}
+
+
 def fit_absorption(thick, trans):
     """thick, trans: 1D arrays (transmittance per thickness). Fit ln T=b-a t."""
     t_all = np.asarray(thick, float)
@@ -271,6 +287,12 @@ def fit_absorption(thick, trans):
     ok = np.isfinite(T) & (T > 1e-3) & (T <= 1.5)
     t, T = t[ok], T[ok]
     if len(t) < 3:
+        # Too few bright points.  If nearly every cell is black, the channel is
+        # fully absorbed (floored), not merely missing -> lower bound, so it can't
+        # silently fall back to a badly-exposed colour screen.  Otherwise give up.
+        finite = T_all[np.isfinite(T_all)]
+        if finite.size and float(np.median(finite)) < 0.1:
+            return _floored_lower_bound(t_all, T_all)
         return None
     y = np.log(np.clip(T, 1e-3, None))
     # weight by T (bright, low-noise points count more), one robust reweight pass
@@ -290,20 +312,8 @@ def fit_absorption(thick, trans):
         # Absorption can't be negative for a passive filter -- a<0 is a degenerate
         # fit.  Two cases, told apart by how bright the thinnest cell is:
         Tmax = float(T.max())
-        tmin = float(t[int(np.argmax(T))])            # thickness of brightest cell
-        if Tmax < 0.15 and tmin > 1e-6:
-            # channel FULLY ABSORBED (floored to black, e.g. red through an
-            # intense blue): the log-fit is fitting black-floor noise.  The
-            # tightest honest lower bound comes from the THINNEST cell -- if even
-            # that reads ~black, a must exceed (ln T0 - ln T_thin)/t_thin.  Noise
-            # only ADDS light, so measured T over-estimates true T -> this is a
-            # valid lower bound.  Flag it; the exact value is unmeasurable.
-            i0 = int(np.argmin(t_all))
-            t_thin = max(float(t_all[i0]), 1e-6)
-            T_thin = min(max(float(T_all[i0]), 5e-3), 0.15)
-            a_lb = (np.log(0.9) - np.log(T_thin)) / t_thin
-            return {"a": float(a_lb), "b": float(np.log(0.9)), "T0": 0.9,
-                    "r2": 0.0, "n": int(len(t)), "floored": True}
+        if Tmax < 0.15:                               # fully absorbed (floored)
+            return _floored_lower_bound(t_all, T_all)
         # else: channel barely absorbs (a wobbled slightly negative on noise) ->
         # clamp to transparent rather than trusting a spurious negative slope.
         b, a = float(np.log(min(Tmax, 1.0))), 0.0
@@ -468,12 +478,13 @@ CAPTURE_TIPS = (
     "  * Shoot in a DARK room to kill reflections off the pad's top surface, but\n"
     "    set the SCREEN to MAX, FIXED brightness -- turn OFF auto/adaptive\n"
     "    brightness, True Tone and Night Shift (a dim adaptive screen ruins SNR).\n"
-    "  * Keep ISO LOW and lock the camera's exposure + white balance so all four\n"
-    "    shots share one exposure; avoid clipping the bare screen to pure white.\n"
-    "  * Reference starting point (manual/pro mode): ISO 100, then set the shutter\n"
-    "    so the BARE SCREEN reads ~85-95%% (bright but NOT clipped) -- if the cells\n"
-    "    look too dark, LENGTHEN the shutter rather than raising ISO. Lock ISO +\n"
-    "    shutter + WB and use the same for all four screen colours.\n"
+    "  * Expose EACH screen on ITS OWN: transmittance is cell/bare-screen WITHIN\n"
+    "    one photo, so absolute level cancels -- set the shutter PER COLOUR so that\n"
+    "    screen's bare windows read ~85-95%%. Do NOT reuse one shutter across\n"
+    "    colours: a blue screen is far dimmer than white, so a white-tuned shutter\n"
+    "    under-exposes it. Keep ISO LOW (100) and LENGTHEN the shutter (not ISO)\n"
+    "    for the dim ones. WB is irrelevant (it cancels in the ratio; RAW anyway).\n"
+    "  * Within each photo, don't clip the cells or the bare-screen windows.\n"
     "  * Fill the frame with the pad, keep it flat and roughly square-on."
 )
 
@@ -524,7 +535,6 @@ def _reliability(cal):
     """
     screens = cal["screens"]
     wpc = screens.get("white", {}).get("per_channel", {})
-    max_ref = screens.get("white", {}).get("max_ref")
     diag_of = {"R": "red", "G": "green", "B": "blue"}
     scr = {"R": "RED", "G": "GREEN", "B": "BLUE"}
     per, need, opaque = {}, [], []
@@ -555,30 +565,36 @@ def _reliability(cal):
                      "over-exposed without clipping the others."
                      % (" + ".join(scr[c] for c in need),
                         "s" if len(need) > 1 else "", "/".join(need)))
+    elif opaque:
+        color_req = ("WHITE suffices -- but %s is fully absorbed (opaque): no "
+                     "colour screen can measure it, so a is a LOWER BOUND. That's "
+                     "expected for an intense filament and fine -- it reads ~0 in "
+                     "any mix." % "/".join(opaque))
     else:
         color_req = "WHITE screen only -- a normal transparent filament."
-    if opaque:
-        color_req += ("  (%s stays fully absorbed even on its own screen: "
-                      "genuinely opaque there, the lower bound is fine -- it reads "
-                      "~0 in any mix.)" % "/".join(opaque))
 
-    if max_ref is None:
-        exp_req = ("bare screen (the reference windows between cells) must read "
-                   "~85-95% of full -- bright but NOT clipped. Shoot RAW, dark "
-                   "room, ISO 100, screen at max FIXED brightness, lengthen the "
-                   "shutter (not ISO) to reach it, lock exposure + WB.")
-    else:
-        if max_ref < 0.75:
-            state = "TOO DIM -- lengthen the shutter (not ISO)"
-        elif max_ref > 0.97:
-            state = "TOO BRIGHT -- clipping; shorten the shutter"
-        else:
-            state = "OK"
-        exp_req = ("bare screen (reference windows) must read ~85-95%%; yours = "
-                   "%.0f%% [%s]. Shoot RAW, dark room, ISO 100, screen at max "
-                   "FIXED brightness, lock exposure + WB." % (max_ref * 100, state))
+    # Exposure is PER PHOTO: transmittance = cell/bare-screen within one shot, so
+    # each colour's bare screen should independently read ~85-95%.  Different
+    # screen colours need DIFFERENT shutters (blue is dimmer than white) -- do not
+    # force one shutter across colours.  Flag each shot that's off.
+    exp_bad = []
+    for s in ("white", "red", "green", "blue"):
+        d = screens.get(s)
+        if not d:
+            continue
+        mr, clip = d.get("max_ref"), d.get("clip_frac", 0.0)
+        if mr is not None and mr < 0.75:
+            exp_bad.append("%s TOO DIM (%.0f%%) -- lengthen ITS shutter"
+                           % (s, mr * 100))
+        elif clip is not None and clip > 0.12:
+            exp_bad.append("%s CLIPPED (%.0f%% of windows) -- shorten ITS shutter"
+                           % (s, clip * 100))
+    exp_req = ("each screen's bare windows must read ~85-95%% -- set the shutter "
+               "PER COLOUR (blue is dimmer, needs a longer one); ISO 100, RAW. ")
+    exp_req += ("Issues: " + "; ".join(exp_bad) if exp_bad
+                else "all provided shots exposed OK.")
 
-    return {"filament_class": "intense" if need else "normal-transparent",
+    return {"filament_class": "intense" if (need or opaque) else "normal-transparent",
             "per_channel": per, "color_requirement": color_req,
             "exposure_requirement": exp_req,
             "needs_extra_screens": [scr[c] for c in need]}
