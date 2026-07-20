@@ -284,6 +284,22 @@ def fit_absorption(thick, trans):
     pred = b - a * t
     ss_res = float(((y - pred) ** 2).sum())
     ss_tot = float(((y - y.mean()) ** 2).sum()) + 1e-12
+    if a <= 0.0:
+        # Absorption can't be negative for a passive filter -- a<0 is a degenerate
+        # fit.  Two cases, told apart by how bright the thinnest cell is:
+        Tmax = float(T.max())
+        tmin = float(t[int(np.argmax(T))])            # thickness of brightest cell
+        if Tmax < 0.15 and tmin > 1e-6:
+            # channel FULLY ABSORBED (floored to black, e.g. red through an
+            # intense blue): the log-fit is fitting black-floor noise.  Report a
+            # lower-bound absorption from the brightest point (surface term ~0.9)
+            # and flag it -- the exact value is unmeasurable but must be LARGE +ve.
+            a_lb = (np.log(0.9) - np.log(max(Tmax, 5e-3))) / tmin
+            return {"a": float(a_lb), "b": float(np.log(0.9)), "T0": 0.9,
+                    "r2": 0.0, "n": int(len(t)), "floored": True}
+        # else: channel barely absorbs (a wobbled slightly negative on noise) ->
+        # clamp to transparent rather than trusting a spurious negative slope.
+        b, a = float(np.log(min(Tmax, 1.0))), 0.0
     return {"a": float(a), "b": float(b), "T0": float(np.exp(b)),
             "r2": float(1 - ss_res / ss_tot), "n": int(len(t))}
 
@@ -471,6 +487,13 @@ def _quality_warnings(screens):
                        "screen brightness so the windows aren't maxed out."
                        % (s, clip * 100))
         for ch, f in d.get("per_channel", {}).items():
+            if f.get("floored"):
+                out.append("[%s/%s] FULLY ABSORBED: this channel is black through "
+                           "even the thinnest cell -- absorption is too strong to "
+                           "measure, so a=%.1f/mm is a LOWER BOUND (fine: the "
+                           "channel reads ~0 regardless). Expected for an intense "
+                           "filament (e.g. red through deep blue)." % (s, ch, f["a"]))
+                continue
             # only flag channels that ABSORB meaningfully but fit poorly (a
             # near-zero channel, e.g. red through a red filament, is low-r2 by
             # nature -- nothing to fit -- and must not be flagged as noisy).
