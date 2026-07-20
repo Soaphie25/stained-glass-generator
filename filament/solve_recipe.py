@@ -105,10 +105,12 @@ def delta_e(lin_a, lin_b):
 # Filament model
 # --------------------------------------------------------------------------- #
 class Filament:
-    def __init__(self, name, a, T0):
+    def __init__(self, name, a, T0, max_frac=1.0):
         self.name = name
         self.a = np.asarray(a, float)          # absorption per mm, per channel
         self.T0 = np.asarray(T0, float)        # zero-thickness surface transmittance
+        self.max_frac = float(max_frac)        # cap on this filament's sub-layer mix
+        #                                        share (a VERY intense filament <0.4)
 
     def __repr__(self):
         return "Filament(%s, a=%s, T0=%s)" % (
@@ -132,7 +134,8 @@ def load_filament(name, cal_path):
             raise SystemExit("error: %s has no absorption for channel %s" %
                              (cal_path, c))
         T0.append(white[c]["T0"] if c in white else 0.92)
-    return Filament(name, a, T0)
+    max_frac = cal.get("reliability", {}).get("recommended_max_mix_fraction", 1.0)
+    return Filament(name, a, T0, max_frac=max_frac)
 
 
 # --------------------------------------------------------------------------- #
@@ -295,7 +298,9 @@ def solve_target_sublayer(target_hex, pool, sigma, ratio_step=0.05,
         sA = sigma.get(A.name, np.zeros(3))
         sB = sigma.get(B.name, np.zeros(3))
         have = A.name in sigma and B.name in sigma
-        for p in ratios:
+        for p in ratios:                                 # p = fraction of B
+            if p > B.max_frac + 1e-9 or (1 - p) > A.max_frac + 1e-9:
+                continue                                 # intense-filament cap
             for T in thicks:
                 add(predict_mix_linear([A, B], [sA, sB], [1 - p, p], T),
                     {"n": 2, "filaments": [A.name, B.name],
@@ -313,6 +318,9 @@ def solve_target_sublayer(target_hex, pool, sigma, ratio_step=0.05,
                     fc = round(1 - fa - fb, 3)
                     if fc < 0.19:
                         continue
+                    if (fa > mods[0].max_frac + 1e-9 or fb > mods[1].max_frac + 1e-9
+                            or fc > mods[2].max_frac + 1e-9):
+                        continue                         # intense-filament cap
                     for T in thicks:
                         add(predict_mix_linear(mods, sgs, [fa, fb, fc], T),
                             {"n": 3, "filaments": [m.name for m in mods],

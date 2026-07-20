@@ -555,13 +555,14 @@ def _reliability(cal):
     wpc = screens.get("white", {}).get("per_channel", {})
     diag_of = {"R": "red", "G": "green", "B": "blue"}
     scr = {"R": "RED", "G": "GREEN", "B": "BLUE"}
-    per, need, opaque = {}, [], []
+    per, need, opaque, a_by_c = {}, [], [], {}
     for c in ("R", "G", "B"):
         provided = diag_of[c] in screens
         f = wpc.get(c) or screens.get(diag_of[c], {}).get("per_channel", {}).get(c)
         if not f:
             per[c] = "not measured"
             continue
+        a_by_c[c] = abs(f.get("a", 0.0))
         if f.get("floored"):
             per[c] = "fully absorbed -> a=%.1f is a LOWER BOUND" % f["a"]
             (opaque if provided else need).append(c)
@@ -612,10 +613,30 @@ def _reliability(cal):
     exp_req += ("Issues: " + "; ".join(exp_bad) if exp_bad
                 else "all provided shots exposed OK.")
 
+    # A VERY intense filament blocks a channel so hard that even a minority share
+    # of it in a sub-layer mix drives that channel to black -- it becomes the
+    # dominant colour and overwrites the others.  Recommend capping its mix
+    # fraction: keep the blocked channel above ~5% transmission at a typical 1mm
+    # mix (absorbance budget ~3 => frac < 3/max_a), never above 40%.
+    max_a = max(a_by_c.values()) if a_by_c else 0.0
+    very_intense = max_a > 3.0
+    max_mix_fraction = (round(min(0.40, 3.0 / max_a), 2) if very_intense else 1.0)
+    mix_advice = None
+    if very_intense:
+        ch = max(a_by_c, key=a_by_c.get)
+        mix_advice = ("VERY INTENSE (a=%.1f/mm in %s -- near-opaque): in a sub-layer "
+                      "mix keep this filament UNDER %.0f%%, else it dominates and "
+                      "overwrites the other colours." % (max_a, ch,
+                                                         max_mix_fraction * 100))
+
     return {"filament_class": "intense" if (need or opaque) else "normal-transparent",
             "per_channel": per, "color_requirement": color_req,
             "exposure_requirement": exp_req,
-            "needs_extra_screens": [scr[c] for c in need]}
+            "needs_extra_screens": [scr[c] for c in need],
+            "max_absorption_per_mm": round(max_a, 2),
+            "very_intense": very_intense,
+            "recommended_max_mix_fraction": max_mix_fraction,
+            "mix_advice": mix_advice}
 
 
 def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10,
@@ -1160,6 +1181,8 @@ def main(argv=None):
     sys.stderr.write("\nCAPTURE REQUIREMENTS\n")
     sys.stderr.write("  colour   : %s\n" % rel["color_requirement"])
     sys.stderr.write("  exposure : %s\n" % rel["exposure_requirement"])
+    if rel.get("mix_advice"):
+        sys.stderr.write("\nMIX ADVICE\n  %s\n" % rel["mix_advice"])
     if cal["warnings"]:
         sys.stderr.write("\n!! SHOT QUALITY WARNINGS -- results may be unreliable:\n")
         for wmsg in cal["warnings"]:
