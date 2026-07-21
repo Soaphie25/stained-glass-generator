@@ -168,8 +168,38 @@ def do_gen3mf(data):
             "table": _table(m), "dims": [round(m["W"]), round(m["H"])]}
 
 
+def do_suggest(data):
+    """Rank filament subsets that best cover the picked image (area-weighted mean
+    Delta-E over its colours), so you pick the best N of your calibrated filaments."""
+    f = data.get("image")
+    if not f:
+        return {"ok": False, "stderr": "pick an image in step ② first "
+                                       "请先在②选择图片"}
+    work = os.path.join(ROOT, WORK)
+    os.makedirs(work, exist_ok=True)
+    ext = os.path.splitext(f.get("filename", ""))[1] or ".png"
+    p = os.path.join(work, "_suggest" + ext)
+    with open(p, "wb") as fh:
+        fh.write(base64.b64decode(f["b64"].split(",")[-1]))
+    import solve_recipe as SR
+    names = _filaments()
+    slots = int(data.get("slots") or 4)
+    if len(names) < slots:
+        return {"ok": False, "stderr": "need >= %d calibrated filaments (have %d)"
+                % (slots, len(names))}
+    mixcals = glob.glob(os.path.join(ROOT, CALROOT, "mix", "*",
+                                     "mixture_calibration.json"))
+    sigma, pair = SR.load_sigma(mixcals)
+    pool = [SR.load_filament(n, os.path.join(ROOT, CALROOT, n, "calibration.json"))
+            for n in names]
+    hexes, wts = SR.image_colors(p, 24)
+    ranked = SR.suggest_palette(hexes, wts, pool, sigma, pair, slots, 3.0,
+                                float(data.get("max_delta") or 20))
+    return {"ok": True, "ranked": ranked[:6], "n_colors": len(hexes), "slots": slots}
+
+
 POST = {"/lutstatus": do_lutstatus, "/gamut": do_gamut, "/convert": do_convert,
-        "/preview": do_preview, "/gen3mf": do_gen3mf}
+        "/preview": do_preview, "/gen3mf": do_gen3mf, "/suggest": do_suggest}
 
 
 PAGE = r"""<!doctype html><html><head><meta charset=utf-8>
@@ -199,6 +229,7 @@ PAGE = r"""<!doctype html><html><head><meta charset=utf-8>
 <fieldset><legend>① Filaments &amp; gamut&nbsp;·&nbsp;耗材与色域</legend>
  <div id=lut>checking… 检查中…</div>
  <div id=gamut style="margin-top:8px"></div>
+ <div id=sug_result style="margin-top:6px"></div>
 </fieldset>
 
 <fieldset><legend>② Image → panes&nbsp;·&nbsp;图片 → 玻璃块</legend>
@@ -266,7 +297,19 @@ function renderFil(){
  ALLFIL.forEach(f=>{const on=SEL.includes(f);const dis=(!on&&SEL.length>=SLOTS);
    h+='<label style="margin-right:16px;color:'+(dis?'#bbb':'#222')+'"><input type=checkbox '+(on?'checked':'')+(dis?' disabled':'')+' onchange="togg(\''+f+'\')"> '+f+'</label>';});
  h+=' &nbsp;<button onclick="addAms()">+ Filament 加耗材</button> &nbsp;<span style="color:#777;font-size:12px">'+SEL.length+'/'+SLOTS+' slots 槽</span>';
+ h+=' &nbsp;<button onclick="suggest()">◎ Suggest for image 为图片推荐</button> <span id=sug_status style="color:#777;font-size:12px"></span>';
  $('lut').innerHTML=h;}
+async function suggest(){const el=$('img');
+ if(!el.files[0]){alert('pick an image in step ② first · 请先在②选择图片');return;}
+ $('sug_status').textContent='scoring… 评分中…';
+ const image=await f2b64(el.files[0]);
+ const r=await post('/suggest',{image,slots:SLOTS,max_delta:$('o_maxdelta').value});
+ $('sug_status').textContent='';
+ if(!r.ok){$('sug_result').innerHTML='<div class=warn>'+(r.stderr||'')+'</div>';return;}
+ let h='<div style="color:#555;font-size:12px">Best '+r.slots+'-filament palettes for this image ('+r.n_colors+' colours) — click to apply · 点击应用最佳组合：</div><table style="font-size:13px">';
+ r.ranked.forEach(x=>{h+='<tr><td><button onclick="applyPal(\''+x.filaments.join(',')+'\')">'+x.filaments.join(' + ')+'</button></td><td>&nbsp;mean ΔE '+x.mean_de.toFixed(1)+'</td><td>&nbsp;'+Math.round(x.oog_frac*100)+'% out-of-gamut 超色域</td></tr>';});
+ h+='</table>';$('sug_result').innerHTML=h;}
+function applyPal(csv){SEL=csv.split(',').slice(0,SLOTS);renderFil();genGamut();}
 function togg(f){const i=SEL.indexOf(f);if(i>=0)SEL.splice(i,1);else if(SEL.length<SLOTS)SEL.push(f);renderFil();genGamut();}
 function addAms(){SLOTS=Math.min(8,SLOTS+4);renderFil();}
 async function genGamut(){$('gamut').innerHTML='<span style="color:#777">building gamut… 生成色域…</span>';
