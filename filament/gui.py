@@ -57,9 +57,11 @@ REQ = (
     "• Don't clip the cells or the windows. Lay the pad FLAT, square-on, filling "
     "the frame.\n"
     "  不要让格子或参考窗过曝削顶；标定板铺平、正对镜头并充满画面。\n"
-    "• Normal filament: WHITE only. Intense filament: add its RED/GREEN/BLUE "
-    "screens too (the result will tell you).\n"
-    "  普通耗材：只需白屏。强吸收耗材：另加对应的红/绿/蓝屏（分析结果会提示）。"
+    "• Most filaments: WHITE only. Pale or intense filament: add its RED/GREEN/BLUE "
+    "screen(s) to sharpen the hue (each colour screen measures its channel at higher "
+    "SNR; used automatically when cleaner).\n"
+    "  多数耗材：只需白屏。淡色或强吸收耗材：另加对应红/绿/蓝屏以校正色相"
+    "（彩色屏高信噪比测量该通道，拟合更干净时自动采用）。"
 )
 
 
@@ -360,7 +362,7 @@ PAGE = """<!doctype html><html><head><meta charset=utf-8>
   <div class=row><label>red 红</label><input type=file id=f_red accept="image/*,.dng,.arw,.cr2,.nef,.raf"></div>
   <div class=row><label>green 绿</label><input type=file id=f_green accept="image/*,.dng,.arw,.cr2,.nef,.raf"></div>
   <div class=row><label>blue 蓝</label><input type=file id=f_blue accept="image/*,.dng,.arw,.cr2,.nef,.raf"></div>
-  <div class=row style="color:#777;font-size:12px">White alone is enough for a normal filament; add colour screens only for an intense one.<br>普通耗材只需白屏；仅强吸收耗材需要额外的彩色背光。</div>
+  <div class=row style="color:#777;font-size:12px">White alone works for most filaments. Add the matching colour screen(s) to sharpen the hue of a <b>pale</b> or <b>intense</b> filament — each colour screen measures its channel (R/G/B) at far higher SNR, and is used automatically when it's the cleaner fit.<br>大多数耗材只需白屏。<b>淡色</b>或<b>强吸收</b>耗材可另加对应彩色背光以校正色相——彩色屏能高信噪比地测量该通道，拟合更干净时会自动采用。</div>
   <div class=row><button onclick="pickMarkers('cal','f_white','mk_area')">◈ Pick markers manually 手动标记角点</button>
     <span style="color:#777;font-size:12px">use if auto-detect grabs the wrong squares (e.g. a black border) · 自动识别选错方块（如黑边框）时使用</span></div>
   <div id=mk_area></div>
