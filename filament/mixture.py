@@ -309,9 +309,20 @@ def run_fit(opts):
         T, fl = _orient(_sample(opts.white, _mk(opts.markers))[0], (0, 1, 2))
         if fl:
             flips.append("white")
+    STRONG_A = 0.5
     for scr, ch in (("red", 0), ("green", 1), ("blue", 2)):
         path = getattr(opts, scr, None)
         if not path:
+            continue
+        # A colour screen only helps where BOTH filaments WEAKLY absorb this channel.
+        # If EITHER strongly absorbs it, the colour-through-mix cell sits near the
+        # noise floor -> the ratio inflates (same metamerism as single-cal), so keep
+        # white (e.g. red's G/B).  Needs white to fall back to.
+        if opts.white and max(fA.a[ch], fB.a[ch]) >= STRONG_A:
+            who = fA.name if fA.a[ch] >= fB.a[ch] else fB.name
+            print("NOTE: %s screen skipped for the %s channel -- %s strongly absorbs "
+                  "it (colour-through-mix reads near the floor); kept white."
+                  % (scr, "RGB"[ch], who))
             continue
         Tc, _, _, sat = _sample(path, _mk(getattr(opts, "markers_" + scr, None)))
         if sat[ch] >= 0.95:                           # near-clipped -> inflated ratio
