@@ -816,8 +816,17 @@ def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10
         # a clipped colour reference is saturated -> its transmittance (cell/ref)
         # is bogus, so don't prefer it even if the raw fit looks clean; use white.
         dclip = dscreen.get("clip_frac", 0.0) > 0.12
-        use_diag = (dfit and not dfit.get("floored") and not dclip and
-                    dfit.get("r2", 0.0) > (wfit.get("r2", -1.0) if wfit else -1.0))
+        d_ok = dfit and not dfit.get("floored") and not dclip
+        if not wfit:
+            use_diag = bool(d_ok)                     # colour screen is the only source
+        else:
+            # Only OVERRIDE white when white is genuinely noisy (pale/weak channel)
+            # AND the colour screen is clearly cleaner.  A strongly-absorbed channel
+            # with a clean white fit stays on white: its narrow-primary reading is a
+            # different band (metamerism) and white is the correct band-average for
+            # white-lit viewing.
+            use_diag = bool(d_ok and wfit.get("r2", 0.0) < 0.88 and
+                            dfit.get("r2", 0.0) > wfit.get("r2", 0.0) + 0.05)
         src = dfit if use_diag else (wfit or dfit)
         if src:
             primary[cname] = round(src["a"], 5)
