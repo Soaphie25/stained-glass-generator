@@ -605,6 +605,9 @@ async function mixfit(){const btn=document.getElementById('mx_go');btn.disabled=
    // pull the model vs baseline dE summary lines
    const t=res.stdout||'',m=t.match(/model.*dE.*/i),b=t.match(/baseline.*dE.*/i);
    if(m||b)h+='<div class=ok>'+[m,b].filter(Boolean).map(x=>x[0]).join('<br>')+'<br><span style="color:#555">lower model ΔE = better; the pair is now a direct posterior in the LUT. 模型 ΔE 越低越好，该组合已作为直接后验进入查找表。</span></div>';
+   const lines=t.split('\\n'),ei=lines.findIndex(l=>l.indexOf('ENDPOINT MISMATCH')>=0);
+   if(ei>=0){const blk=[];for(let i=ei;i<lines.length;i++){if(i>ei&&(lines[i].trim()===''||lines[i].indexOf('wrote')===0))break;blk.push(lines[i]);}
+     h+='<div class=warn><b>⚠ Endpoint mismatch 端点不匹配</b><pre class=out>'+blk.join('\\n')+'</pre><span style="color:#555">The ramp ends disagree with the single-filament cals, so σ is unreliable. Re-calibrate the flagged filament(s) and reshoot on the same pad. 渐变端点与单色校准不符，σ 不可靠——请重新校准被标记的耗材并在同一板上重拍。</span></div>';}
    if(res.images)res.images.forEach(p=>h+=img(p));
    h+='<details><summary>raw table 原始数据</summary><pre class=out>'+t+'</pre></details>';}
  document.getElementById('mx_result').innerHTML=h;}

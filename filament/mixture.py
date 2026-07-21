@@ -361,12 +361,36 @@ def run_fit(opts):
                  linear_to_hex(base), de, db))
     print("\nmodel   mean dE %.2f / max %.2f" % (np.mean(des), np.max(des)))
     print("baseline mean dE %.2f / max %.2f  (scatter off)" % (np.mean(bas), np.max(bas)))
+
+    # The pure ends are ANCHORED to the single-filament cals (scatter = 0 at f=0,1).
+    # If a measured end doesn't match its single-cal, sigma can only bend the MIDDLE
+    # around a fixed endpoint error -> a non-monotonic curve and a meaningless sigma.
+    endA, endB = des[0], des[-1]
+    ENDPOINT_TOL = 10.0
+    endpoint_ok = endA <= ENDPOINT_TOL and endB <= ENDPOINT_TOL
+    if not endpoint_ok:
+        print("\n!! ENDPOINT MISMATCH -- sigma fit is UNRELIABLE (fix the ends first):")
+        if endA > ENDPOINT_TOL:
+            print("   pad0 pure %-10s measured #%s vs single-cal #%s  dE=%.1f"
+                  % (fA.name, linear_to_hex(np.clip(T[0], 0, 1)),
+                     linear_to_hex(predA), endA))
+        if endB > ENDPOINT_TOL:
+            print("   pad%-3d pure %-9s measured #%s vs single-cal #%s  dE=%.1f"
+                  % (int(pads[-1]["pct_b"]), fB.name,
+                     linear_to_hex(np.clip(T[-1], 0, 1)), linear_to_hex(predB), endB))
+        print("   The ramp ends disagree with the single-filament calibrations, so"
+              " the fit anchors a bent curve around them. Re-calibrate the off"
+              " filament(s) and re-shoot on the SAME pad before trusting sigma.")
+
     os.makedirs(opts.out_dir, exist_ok=True)
     _draw_mix_swatches(fA.name, fB.name, rows,
                        os.path.join(opts.out_dir, "mixture_fit.png"))
     with open(os.path.join(opts.out_dir, "mixture_calibration.json"), "w") as f:
         json.dump({"filaments": [fA.name, fB.name], "thickness_mm": Tmm,
                    "sigma": {n: [float(x) for x in sigma[n]] for n in sigma},
+                   "endpoint_de": {fA.name: round(float(endA), 2),
+                                   fB.name: round(float(endB), 2)},
+                   "endpoint_ok": bool(endpoint_ok),
                    "measured_tau": pair["tau"], "ratios": pair["ratios"]}, f, indent=2)
     print("\nwrote %s/mixture_calibration.json" % opts.out_dir)
     return 0
