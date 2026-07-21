@@ -26,8 +26,10 @@ Design (all one transparent filament, so NO coloured fiducials):
   * Reference windows are real HOLES cut through the base plate, giving true
     bare-screen samples to normalise out per-photo exposure / white-balance /
     brightness gradients.
-  * BLACK opaque register markers sit on the plate (a separate part for your
-    black filament): 4 corners + an orientation dot next to the top-left one.
+  * 4 corner registration squares.  DEFAULT: square HOLES through the plate
+    (bright when backlit) -> the pad prints in ONE filament with NO colour swap;
+    you hand-pick the 4 corners in the analyser ("Pick markers manually").
+    --black-markers restores opaque black caps (auto-detectable, needs a swap).
 
 Print notes: slice at a layer height that divides both --base-plate-mm and
 --step-mm (e.g. 0.1 mm layers) so thicknesses are exact.  100% infill, transparent
@@ -115,6 +117,40 @@ def write_3mf(path, body_boxes, marker_boxes, offset=(10.0, 10.0),
     tx, ty = offset
     core = "http://schemas.microsoft.com/3dmanufacturing/core/2015/02"
     matns = "http://schemas.microsoft.com/3dmanufacturing/material/2015/02"
+    if not marker_boxes:                            # single-filament pad (holes)
+        model = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<model unit="millimeter" xml:lang="en-US" xmlns="%s" xmlns:m="%s">\n'
+            ' <resources>\n'
+            '  <basematerials id="1">'
+            '<base name="Transparent" displaycolor="%s"/></basematerials>\n'
+            '  <object id="2" type="model" pid="1" pindex="0">%s</object>\n'
+            ' </resources>\n'
+            ' <build><item objectid="2" '
+            'transform="1 0 0 0 1 0 0 0 1 %.3f %.3f 0"/></build>\n'
+            '</model>\n'
+        ) % (core, matns, body_color, _mesh_xml(body_boxes), tx, ty)
+        content_types = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/'
+            'content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.'
+            'openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="model" ContentType="application/vnd.ms-package.'
+            '3dmanufacturing-3dmodel+xml"/></Types>'
+        )
+        rels = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/'
+            'relationships"><Relationship Target="/3D/3dmodel.model" Id="rel0" '
+            'Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>'
+            '</Relationships>'
+        )
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("[Content_Types].xml", content_types)
+            z.writestr("_rels/.rels", rels)
+            z.writestr("3D/3dmodel.model", model)
+        return
     model = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<model unit="millimeter" xml:lang="en-US" xmlns="%s" xmlns:m="%s">\n'
@@ -240,8 +276,27 @@ def build_layout(opts):
                                 "r": round(wr, 3)})
                 holes.append((wx - wr, wy - wr, wx + wr, wy + wr))
 
+    # 4 corner registration squares.  DEFAULT: square HOLES through the plate --
+    # bright when backlit, so the pad prints in ONE filament (no black swap) and
+    # you hand-pick these corners in the analyser.  --black-markers restores the
+    # old opaque black caps (auto-detectable, but needs a filament change).
+    mk = opts.marker_mm
+    inset = opts.marker_inset_mm
+    corner_xy = {
+        "bottom_left":  (inset, inset),
+        "bottom_right": (pad_w - inset - mk, inset),
+        "top_right":    (pad_w - inset - mk, pad_h - inset - mk),
+        "top_left":     (inset, pad_h - inset - mk),
+    }
+    reg = {}
+    for name, (mx0, my0) in corner_xy.items():
+        if not opts.black_markers:
+            holes.append((mx0, my0, mx0 + mk, my0 + mk))   # cut through the plate
+        reg[name] = {"cx": round(mx0 + mk / 2, 3), "cy": round(my0 + mk / 2, 3),
+                     "w": mk, "h": mk}
+
     boxes = []
-    # 1) continuous transparent base plate with the window holes (z 0..base)
+    # 1) continuous transparent base plate with the window + corner holes (z 0..base)
     boxes += _plate_with_holes(0, 0, pad_w, pad_h, 0.0, base, holes)
     # 2) cells rising from the plate top (z base..base+increment)
     for cell, inc in zip(cells, increments):
@@ -249,36 +304,28 @@ def build_layout(opts):
         y0, y1 = cell["cy"] - csz / 2, cell["cy"] + csz / 2
         boxes.append((x0, y0, base, x1, y1, round(base + inc, 4)))
 
-    # BLACK opaque register caps sitting ON TOP of the plate corners -> a SEPARATE
-    # part for your black filament.  Black is opaque, so it hides the transparent
-    # base beneath it; and because it only occupies the TOP layers, the slicer
-    # needs a single change to black near the end of the print (minimal swap
-    # time).  A dot next to the top-left corner fixes orientation.
-    mk = opts.marker_mm
-    inset = opts.marker_inset_mm
-    cap = opts.marker_h_mm
-    mz0, mz1 = base, round(base + cap, 4)
-    corners = {
-        "bottom_left":  (inset, inset),
-        "bottom_right": (pad_w - inset - mk, inset),
-        "top_right":    (pad_w - inset - mk, pad_h - inset - mk),
-        "top_left":     (inset, pad_h - inset - mk),
-    }
+    # --black-markers: opaque BLACK caps on the plate corners (a separate part for
+    # your black filament) + an orientation dot.  Auto-detectable, but needs one
+    # filament swap.  Default (holes) skips this entirely.
     marker_boxes = []
-    reg = {}
-    for name, (mx0, my0) in corners.items():
-        marker_boxes.append((mx0, my0, mz0, mx0 + mk, my0 + mk, mz1))
-        reg[name] = {"cx": round(mx0 + mk / 2, 3), "cy": round(my0 + mk / 2, 3),
-                     "w": mk, "h": mk}
-    dot = mk * 0.45                              # orientation dot by top-left
-    dx0 = inset + mk + opts.marker_gap_mm
-    dy0 = pad_h - inset - dot
-    marker_boxes.append((dx0, dy0, mz0, dx0 + dot, dy0 + dot, mz1))
-    reg["orientation_dot"] = {"cx": round(dx0 + dot / 2, 3),
-                              "cy": round(dy0 + dot / 2, 3),
-                              "w": round(dot, 3), "h": round(dot, 3),
-                              "note": "black dot next to the TOP-LEFT corner"}
+    if opts.black_markers:
+        cap = opts.marker_h_mm
+        mz0, mz1 = base, round(base + cap, 4)
+        for name, (mx0, my0) in corner_xy.items():
+            marker_boxes.append((mx0, my0, mz0, mx0 + mk, my0 + mk, mz1))
+        dot = mk * 0.45                          # orientation dot by top-left
+        dx0 = inset + mk + opts.marker_gap_mm
+        dy0 = pad_h - inset - dot
+        marker_boxes.append((dx0, dy0, mz0, dx0 + dot, dy0 + dot, mz1))
+        reg["orientation_dot"] = {"cx": round(dx0 + dot / 2, 3),
+                                  "cy": round(dy0 + dot / 2, 3),
+                                  "w": round(dot, 3), "h": round(dot, 3),
+                                  "note": "black dot next to the TOP-LEFT corner"}
 
+    marker_desc = ("black opaque cap on top of the plate (separate markers part)"
+                   if opts.black_markers else
+                   "square HOLE through the plate (bright when backlit); hand-pick "
+                   "these 4 corners in the analyser -- pad is ONE filament")
     layout = {
         "units": "mm",
         "screen_w_mm": opts.screen_w_mm, "screen_h_mm": opts.screen_h_mm,
@@ -293,8 +340,9 @@ def build_layout(opts):
         "origin": "bottom-left",
         "pad_corners": [[0, 0], [pad_w, 0], [pad_w, pad_h], [0, pad_h]],
         "register_markers": {
-            "color": "black opaque cap on top of the plate (separate markers part)",
-            "cap_mm": cap, "size_mm": mk, "z_mm": [mz0, mz1],
+            "style": "black_caps" if opts.black_markers else "holes",
+            "color": marker_desc,
+            "size_mm": mk,
             "corners": reg,
         },
         "cells": cells,
@@ -336,12 +384,17 @@ def write_preview(layout, path, px_per_mm=8):
         d.rectangle([x0, y0, x1, y1], fill=(g, g, g), outline=(90, 90, 90))
         d.text((x0 + 2, y0 + 2), "%.1f" % c["thickness_mm"],
                fill=(255, 80, 80) if g < 130 else (60, 60, 60))
-    reg = layout["register_markers"]["corners"]  # black corners + orient dot
+    holes_style = layout["register_markers"].get("style") == "holes"
+    reg = layout["register_markers"]["corners"]  # corner registration squares
     for name, m in reg.items():
-        outline = (230, 40, 40) if name == "orientation_dot" else (0, 0, 0)
+        if holes_style:                          # bright bare-screen holes
+            fill, outline = (255, 255, 255), (150, 150, 160)
+        else:
+            fill = (15, 15, 15)
+            outline = (230, 40, 40) if name == "orientation_dot" else (0, 0, 0)
         d.rectangle([X(m["cx"] - m["w"] / 2), Y(m["cy"] + m["h"] / 2),
                      X(m["cx"] + m["w"] / 2), Y(m["cy"] - m["h"] / 2)],
-                    fill=(15, 15, 15), outline=outline, width=2)
+                    fill=fill, outline=outline, width=2)
     img.save(path)
 
 
@@ -371,8 +424,11 @@ def main(argv=None):
     p.add_argument("--base-plate-mm", type=float, default=0.4,
                    help="continuous rigid base-plate thickness; makes the pad one "
                         "piece and is added to every cell's light path (default 0.4)")
+    p.add_argument("--black-markers", action="store_true",
+                   help="use opaque BLACK corner caps (auto-detectable) instead of "
+                        "the default corner HOLES; needs a black filament swap")
     p.add_argument("--marker-mm", type=float, default=6.0,
-                   help="black corner register-marker size (default 6)")
+                   help="corner register-marker/hole size (default 6)")
     p.add_argument("--marker-inset-mm", type=float, default=1.0,
                    help="register-marker inset from pad edge (default 1)")
     p.add_argument("--marker-h-mm", type=float, default=0.4,
@@ -408,14 +464,20 @@ def main(argv=None):
 
     # calibration_pad.3mf IS the Bambu project (bundled template unless --plain
     # or a custom --bambu-template); the plain 3MF is only for non-Bambu slicers.
+    holes_mode = not marker_boxes                   # default: single-filament pad
     from bambu_mix3mf import write_bambu_color_mix_3mf, default_template
     template = None if opts.plain else (opts.bambu_template or default_template())
     if template:
-        bases = [{"colour": "#BFD8FF"}, {"colour": "#111111"}]   # body, black
-        parts = [{"name": "body", "boxes": body_boxes, "slot": 1},
-                 {"name": "markers", "boxes": marker_boxes, "slot": 2}]
+        if holes_mode:
+            bases = [{"colour": "#BFD8FF"}]
+            parts = [{"name": "body", "boxes": body_boxes, "slot": 1}]
+            kind = "Bambu project (ONE filament; corners are holes)"
+        else:
+            bases = [{"colour": "#BFD8FF"}, {"colour": "#111111"}]   # body, black
+            parts = [{"name": "body", "boxes": body_boxes, "slot": 1},
+                     {"name": "markers", "boxes": marker_boxes, "slot": 2}]
+            kind = "Bambu project (slot 1=transparent body, slot 2=black markers)"
         write_bambu_color_mix_3mf(tmf, template, bases, parts)
-        kind = "Bambu project (slot 1=transparent body, slot 2=black markers)"
     else:
         write_3mf(tmf, body_boxes, marker_boxes)
         kind = ("PLAIN 3MF -- Bambu flags 'not from Bambu Lab'; drop --plain for "
@@ -424,27 +486,34 @@ def main(argv=None):
     stls = ""
     if opts.also_stl:
         stl_body = os.path.join(out_dir, "calibration_pad_body.stl")
-        stl_mark = os.path.join(out_dir, "calibration_pad_markers.stl")
         write_stl(stl_body, body_boxes)
-        write_stl(stl_mark, marker_boxes)
-        stls = "  %s\n  %s\n" % (stl_body, stl_mark)
+        stls = "  %s\n" % stl_body
+        if marker_boxes:
+            stl_mark = os.path.join(out_dir, "calibration_pad_markers.stl")
+            write_stl(stl_mark, marker_boxes)
+            stls += "  %s\n" % stl_mark
 
     base = layout["base_plate_mm"]
+    if holes_mode:
+        note = ("ONE filament -- the 4 corners are HOLES (bright when backlit). "
+                "Slice at %.2f mm layer height. In the analyser, use \"Pick markers "
+                "manually\" and click the 4 corner holes (any order)." % opts.step_mm)
+    else:
+        note = ("Assign the black 'Black' part to your black filament, keep the body "
+                "on the transparent filament, slice at %.2f mm layer height. The "
+                "black caps are top-layers-only = one filament swap near the end."
+                % opts.step_mm)
     sys.stderr.write(
         "pad %.1f x %.1f mm inside a %.0f x %.0f mm screen | %d cells, total "
         "thickness %.1f-%.1f mm (base plate %.2f + %.1f-%.1f) | cell %.1f mm\n"
         "wrote:\n"
-        "  %s\n     ^ %s (body=transparent, corners=black, grouped & aligned)"
-        "\n%s  %s\n  %s\n"
-        "Assign the black 'Black' part to your black filament, keep the body on "
-        "the transparent filament, slice at %.2f mm layer height. The black caps "
-        "are top-layers-only, so the slicer needs one change to black near the "
-        "end of the print.\n" % (
+        "  %s\n     ^ %s"
+        "\n%s  %s\n  %s\n%s\n" % (
             layout["pad_w_mm"], layout["pad_h_mm"],
             opts.screen_w_mm, opts.screen_h_mm, len(layout["cells"]),
             base + opts.step_mm, base + opts.max_mm, base, opts.step_mm,
             opts.max_mm, layout["cell_mm"],
-            tmf, kind, stls, lay, prev, opts.step_mm))
+            tmf, kind, stls, lay, prev, note))
     return 0
 
 

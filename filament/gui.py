@@ -504,7 +504,7 @@ async function pickMarkers(ctx,fileId,areaId){const el=document.getElementById(f
  if(!r.ok){document.getElementById(areaId).innerHTML='<div class=warn>'+(r.stderr||'decode failed')+'</div>';return;}
  const st={MK:[],orig:r.orig,disp:r.disp,img:null};MKC[ctx]=st;
  const cid='mkc_'+ctx,iid='mki_'+ctx;
- document.getElementById(areaId).innerHTML='<div class=info>Click the 4 black corner markers (any order) · 点击 4 个黑色角标（顺序任意）</div>'+
+ document.getElementById(areaId).innerHTML='<div class=info>Click the 4 corner markers — black squares or holes (any order) · 点击 4 个角标——黑块或孔洞（顺序任意）</div>'+
   '<canvas id="'+cid+'" style="border:1px solid #ccc;max-width:100%;cursor:crosshair"></canvas> <button onclick="clearMk(&quot;'+ctx+'&quot;)">clear 清除</button> <span id="'+iid+'" style="color:#555"></span>';
  const c=document.getElementById(cid),im=new Image();
  im.onload=()=>{c.width=im.width;c.height=im.height;st.img=im;c.getContext('2d').drawImage(im,0,0);
