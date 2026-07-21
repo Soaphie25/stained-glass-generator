@@ -125,25 +125,30 @@ def load_filament(name, cal_path):
         cal = json.load(f)
     prim = cal.get("primary_absorption_per_mm", {})
     white = cal.get("screens", {}).get("white", {}).get("per_channel", {})
+    STRONG_A, T0_FLOOR, T0_DEFAULT = 0.5, 0.78, 0.92
     a, T0 = [], []
     for c in ("R", "G", "B"):
         # absorption: prefer the matching-primary-screen value, else white screen
         if c in prim:
-            a.append(prim[c])
+            a_c = prim[c]
         elif c in white:
-            a.append(white[c]["a"])
+            a_c = white[c]["a"]
         else:
             raise SystemExit("error: %s has no absorption for channel %s" %
                              (cal_path, c))
-        # Surface term T0 is physically ~0.92 (two air/plastic interfaces lose ~8%).
-        # A measured T0 well below that means the fit's INTERCEPT absorbed print-line
-        # SCATTERING -- pronounced on a weakly-absorbing filament whose curve is
-        # nearly flat, so the intercept soaks up the dimming (e.g. light-blue read
-        # ~0.5).  That's not a surface term; it wrongly darkens thin panes and made
-        # 4-colour disagree with 3-colour (which used the 0.92 default).  Bound it;
-        # out of the physical range -> use the default.
-        t0 = white[c]["T0"] if c in white else 0.92
-        T0.append(t0 if 0.82 <= t0 <= 1.0 else 0.92)
+        a.append(a_c)
+        # T0 = exp(intercept).  For a WEAK channel the ln T vs t line is nearly flat,
+        # so its intercept SHOULD sit near the physical surface term (~0.92); if it is
+        # implausibly low there, the intercept soaked up print-line SCATTERING (e.g.
+        # light-blue ~0.5) -> lift it, else thin panes are wrongly darkened and
+        # 4-colour disagrees with 3-colour (0.92 default).  But for a STRONG channel
+        # the intercept is legitimately low (red's G/B are 0.29/0.43 because it
+        # heavily absorbs them) -- it is a real model parameter, NOT a surface term,
+        # so leave it: forcing 0.92 turns red pink.
+        t0 = white[c]["T0"] if c in white else T0_DEFAULT
+        if a_c < STRONG_A and not (T0_FLOOR <= t0 <= 1.0):
+            t0 = T0_DEFAULT
+        T0.append(t0)
     max_frac = cal.get("reliability", {}).get("recommended_max_mix_fraction", 1.0)
     return Filament(name, a, T0, max_frac=max_frac)
 

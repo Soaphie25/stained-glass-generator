@@ -395,7 +395,9 @@ def run_fit(opts):
             if ecur <= ENDPOINT_TOL:
                 continue
             bd, bt = _best_thk(ratio, meas)
-            if bd < ecur - 3 and abs(bt - Tmm) > 0.15 and bd < ENDPOINT_TOL:
+            # only claim a thickness mismatch on a GENUINELY clean match elsewhere
+            # (a marginal improvement is just print/measurement noise, not thickness)
+            if bd < 5.0 and bd < ecur - 6 and abs(bt - Tmm) > 0.2:
                 print("   -> pure %s matches its single-cal at %.1f mm (dE %.1f), not "
                       "the recorded %.1f mm: this pad is %s -- its cal is FINE, just "
                       "set --thickness %.1f (no reshoot)."
