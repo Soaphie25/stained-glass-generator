@@ -321,11 +321,25 @@ def _attach_pad(res, d):
     return res
 
 
+def _batch_args(data):
+    a = []
+    try:
+        c = int(data.get("count") or 1)
+    except ValueError:
+        c = 1
+    if c > 1:
+        a += ["--count", str(c)]
+    cols = [c for c in (data.get("colors") or []) if c]
+    if cols:
+        a += ["--colors", ",".join(cols)]
+    return a
+
+
 def do_genpad(data):
     args = ["python3", "filament/make_calibration_pad.py",
             "--screen-w-mm", str(data.get("w") or 64),
             "--screen-h-mm", str(data.get("h") or 138),
-            "--step-mm", str(data.get("step") or 0.2)]
+            "--step-mm", str(data.get("step") or 0.2)] + _batch_args(data)
     rc, out, err = sh(args)
     return _attach_pad({"ok": rc == 0, "cmd": " ".join(args), "stdout": out,
                         "stderr": err}, "filament/pad")
@@ -334,7 +348,7 @@ def do_genpad(data):
 def do_genmixpad(data):
     args = ["python3", "filament/make_mixture_pad.py",
             "--screen-w-mm", str(data.get("w") or 64),
-            "--screen-h-mm", str(data.get("h") or 138)]
+            "--screen-h-mm", str(data.get("h") or 138)] + _batch_args(data)
     rc, out, err = sh(args)
     return _attach_pad({"ok": rc == 0, "cmd": " ".join(args), "stdout": out,
                         "stderr": err}, "filament/mixpad")
@@ -406,7 +420,8 @@ PAGE = """<!doctype html><html><head><meta charset=utf-8>
   <div class=row>screen 屏幕 <input type=number id=cp_w value=64 style="width:60px"> × <input type=number id=cp_h value=138 style="width:60px"> mm
    &nbsp;&nbsp; step 步长 / 层高 <input type=number id=cp_step value=0.2 step=0.1 style="width:60px"> mm</div>
   <div class=row style="color:#777;font-size:12px">Sized to fit inside your phone/tablet screen; the step MUST equal your print layer height.<br>尺寸需适配你的手机/平板屏幕；步长必须等于打印层高。</div>
-  <div class=row><button class=go onclick="genPad('/genpad','cp')">Generate 3MF 生成</button> <span id=cp_status></span></div>
+  <div class=row>batch 批量 <input type=number id=cp_count value=1 min=1 max=3 style="width:50px"> pad(s) on one plate · each a filament, pick colours 每块一种耗材，选颜色 &nbsp;<input type=color id=cp_c0 value="#bfd8ff"><input type=color id=cp_c1 value="#ffd9b0"><input type=color id=cp_c2 value="#cdebc5"></div>
+  <div class=row><button class=go onclick="genPad('/genpad','cp',3)">Generate 3MF 生成</button> <span id=cp_status></span></div>
   <div id=cp_result></div>
  </fieldset>
  <div class=req>__REQ__</div>
@@ -446,7 +461,8 @@ PAGE = """<!doctype html><html><head><meta charset=utf-8>
  <fieldset><legend>① Generate mixture pad&nbsp;·&nbsp;生成混色渐变板</legend>
   <div class=row>screen 屏幕 <input type=number id=mp_w value=64 style="width:60px"> × <input type=number id=mp_h value=138 style="width:60px"> mm</div>
   <div class=row style="color:#777;font-size:12px">11-pad ramp A→B; load filament A in slot 1, B in slot 2 in the slicer.<br>11 格 A→B 渐变；切片时 A 放 1 号槽、B 放 2 号槽。</div>
-  <div class=row><button class=go onclick="genPad('/genmixpad','mp')">Generate 3MF 生成</button> <span id=mp_status></span></div>
+  <div class=row>batch 批量 <input type=number id=mp_count value=1 min=1 max=3 style="width:50px"> ramp(s) on one plate · A/B colours per ramp 每条渐变的 A/B 颜色 &nbsp;<input type=color id=mp_c0 value="#66a3d2"><input type=color id=mp_c1 value="#d2a366"><input type=color id=mp_c2 value="#66c28a"><input type=color id=mp_c3 value="#c266a3"><input type=color id=mp_c4 value="#a3c266"><input type=color id=mp_c5 value="#8a66c2"></div>
+  <div class=row><button class=go onclick="genPad('/genmixpad','mp',6)">Generate 3MF 生成</button> <span id=mp_status></span></div>
   <div id=mp_result></div>
  </fieldset>
  <fieldset><legend>② Calibrate a 2-colour mixture&nbsp;·&nbsp;校准双色混合</legend>
@@ -503,10 +519,12 @@ function tab(id,b){document.querySelectorAll('.panel').forEach(p=>p.classList.re
 function f2b64(f){return new Promise(r=>{const x=new FileReader();x.onload=()=>r({filename:f.name,b64:x.result});x.readAsDataURL(f);});}
 function img(p){return '<img class=prev src="/img?path='+encodeURIComponent(p)+'&t='+Date.now()+'">';}
 async function post(url,body){const r=await fetch(url,{method:'POST',body:JSON.stringify(body||{})});return r.json();}
-async function genPad(url,pfx){const st=document.getElementById(pfx+'_status');st.textContent='running…';
+async function genPad(url,pfx,ncol){const st=document.getElementById(pfx+'_status');st.textContent='running…';
  document.getElementById(pfx+'_result').innerHTML='';
  const body={w:document.getElementById(pfx+'_w').value,h:document.getElementById(pfx+'_h').value};
  const se=document.getElementById(pfx+'_step');if(se)body.step=se.value;
+ const ce=document.getElementById(pfx+'_count');if(ce)body.count=ce.value;
+ if(ncol){const cols=[];for(let i=0;i<ncol;i++){const el=document.getElementById(pfx+'_c'+i);if(el)cols.push(el.value);}body.colors=cols;}
  const r=await post(url,body);st.textContent='';
  let h=r.ok?'<div class=done>✓ pad generated · 已生成标定板</div>':'<div class=warn><pre class=out>'+(r.stderr||r.stdout||'')+'</pre></div>';
  if(r.download){const fn=r.download.split('/').pop();

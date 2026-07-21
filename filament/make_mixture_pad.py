@@ -96,26 +96,38 @@ def write_3mf_objects(path, objects, offset=(10.0, 10.0)):
         z.writestr("3D/3dmodel.model", model)
 
 
-def _pad_parts(layout, pad_objs, web_boxes, mk_boxes):
-    """Map the mixture pad to bambu_mix3mf parts: bases 1=A, 2=B (+3=black only if
-    there are marker caps); each interior pad is a mix of slots 1,2; web -> A."""
+def _shift_boxes(boxes, dx):
+    """Translate a box list by dx in X (for laying batched ramps across the plate)."""
+    return [(x0 + dx, y0, z0, x1 + dx, y1, z1)
+            for (x0, y0, z0, x1, y1, z1) in boxes]
+
+
+def _pad_parts(layout, pad_objs, web_boxes, mk_boxes,
+               slot_a=1, slot_b=2, dx=0.0, tag=""):
+    """Map ONE mixture ramp to bambu_mix3mf parts using slots ``slot_a``/``slot_b``
+    for pure A/B (and their mixes), shifted by ``dx``.  For a batch, call once per
+    ramp with its own slot pair + offset + a name tag."""
     steps = layout["steps"]
     ca, cb = np.array([70, 130, 210]), np.array([220, 140, 60])
     parts = []
     for i, o in enumerate(pad_objs):
+        bx = _shift_boxes(o["boxes"], dx)
+        nm = o["name"] + tag
         if i == 0:
-            parts.append({"name": o["name"], "boxes": o["boxes"], "slot": 1})
+            parts.append({"name": nm, "boxes": bx, "slot": slot_a})
         elif i == steps:
-            parts.append({"name": o["name"], "boxes": o["boxes"], "slot": 2})
+            parts.append({"name": nm, "boxes": bx, "slot": slot_b})
         else:
             b = i / steps
             col = "#%02X%02X%02X" % tuple(int(x) for x in ca * (1 - b) + cb * b)
-            parts.append({"name": o["name"], "boxes": o["boxes"],
-                          "mix": {"components": [1, 2], "ratios": [1 - b, b],
-                                  "colour": col}})
-    parts.append({"name": "web_A", "boxes": web_boxes, "slot": 1})
+            parts.append({"name": nm, "boxes": bx,
+                          "mix": {"components": [slot_a, slot_b],
+                                  "ratios": [1 - b, b], "colour": col}})
+    parts.append({"name": "web_A" + tag, "boxes": _shift_boxes(web_boxes, dx),
+                  "slot": slot_a})
     if mk_boxes:                                     # black caps only in that mode
-        parts.append({"name": "markers", "boxes": mk_boxes, "slot": 3})
+        parts.append({"name": "markers" + tag,
+                      "boxes": _shift_boxes(mk_boxes, dx), "slot": 3})
     return parts
 
 
@@ -309,6 +321,17 @@ def main(argv=None):
     p.add_argument("--header-mm", type=float, default=9.0)
     p.add_argument("--web-mm", type=float, default=0.3,
                    help="connective web thickness in the gaps (default 0.3)")
+    p.add_argument("--count", type=int, default=1,
+                   help="BATCH: lay this many ramps (1-3) across one plate, each on "
+                        "its own A/B filament pair -- print several pairs in one job "
+                        "(holes pads only)")
+    p.add_argument("--gap-mm", type=float, default=6.0,
+                   help="gap between batched ramps (default 6)")
+    p.add_argument("--plate-mm", type=float, default=250.0,
+                   help="printer plate width for the batch fit check (default 250)")
+    p.add_argument("--colors", default=None,
+                   help="comma-separated #hex per slot A1,B1,A2,B2,... (default "
+                        "a preset palette)")
     p.add_argument("--black-markers", action="store_true",
                    help="use opaque BLACK corner caps (auto-detectable, needs a "
                         "black filament swap) instead of the default corner HOLES")
@@ -332,10 +355,6 @@ def main(argv=None):
     os.makedirs(out_dir, exist_ok=True)
 
     layout, pad_objs, web_boxes, mk_boxes = build_layout(opts)
-    objects = pad_objs + [{"boxes": web_boxes, "name": "web_A",
-                           "color": "#CFE6FFCC"}]
-    if mk_boxes:
-        objects.append({"boxes": mk_boxes, "name": "Black", "color": "#111111FF"})
     tmf = os.path.join(out_dir, "mixture_pad.3mf")
     lay = os.path.join(out_dir, "layout.json")
     prev = os.path.join(out_dir, "mixture_pad_preview.png")
@@ -343,18 +362,51 @@ def main(argv=None):
         json.dump(layout, f, indent=2)
     write_preview(layout, prev)
 
+    # BATCH: N ramps across the plate (holes pads only -- each on its own A/B pair)
+    holes_mode = not mk_boxes
+    n = max(1, min(3, opts.count)) if holes_mode else 1
+    step = layout["pad_w_mm"] + opts.gap_mm
+    while n > 1 and (n * layout["pad_w_mm"] + (n - 1) * opts.gap_mm) > opts.plate_mm:
+        n -= 1
+    if holes_mode and n < min(3, max(1, opts.count)):
+        sys.stderr.write("note: %d ramps don't fit %.0f mm; using %d\n"
+                         % (opts.count, opts.plate_mm, n))
+    offsets = [i * step for i in range(n)]
+    palette = ["#66A3D2", "#D2A366", "#66C28A", "#C266A3", "#A3C266", "#8A66C2"]
+    cols = ([c.strip() for c in opts.colors.split(",")] if opts.colors else palette)
+
     # mixture_pad.3mf IS the Bambu project with ratios pre-set (bundled template
     # unless --plain or a custom --bambu-template); plain has no embedded mixes.
     template = None if opts.plain else (opts.bambu_template or default_template())
     if template:
-        parts = _pad_parts(layout, pad_objs, web_boxes, mk_boxes)
-        info = write_bambu_color_mix_3mf(tmf, template, _bases(mk_boxes), parts)
-        kind = ("Bambu project, %d filament slots (1=A, 2=B%s, mixes), ratios pre-set"
-                % (info["n_slots"], ", 3=black" if mk_boxes else "; corners are HOLES"))
+        parts, bases = [], []
+        for i, off in enumerate(offsets):
+            sa, sb = 2 * i + 1, 2 * i + 2
+            tag = "" if n == 1 else "_r%d" % (i + 1)
+            parts += _pad_parts(layout, pad_objs, web_boxes, mk_boxes,
+                                slot_a=sa, slot_b=sb, dx=off, tag=tag)
+            bases += [{"colour": cols[(2 * i) % len(cols)]},
+                      {"colour": cols[(2 * i + 1) % len(cols)]}]
+        if mk_boxes:                                 # black caps -> a 3rd base (slot 3)
+            bases.append({"colour": "#111111"})
+        info = write_bambu_color_mix_3mf(tmf, template, bases, parts)
+        kind = ("Bambu project, %d ramp%s (%d slot%s%s), ratios pre-set"
+                % (n, "s" if n > 1 else "", info["n_slots"],
+                   "s" if info["n_slots"] > 1 else "",
+                   ", incl. black caps" if mk_boxes else "; corners are HOLES"))
     else:
+        objects = []
+        for off in offsets:
+            objects += [{"boxes": _shift_boxes(o["boxes"], off),
+                         "name": o["name"], "color": o["color"]} for o in pad_objs]
+            objects.append({"boxes": _shift_boxes(web_boxes, off), "name": "web_A",
+                            "color": "#CFE6FFCC"})
+        if mk_boxes:
+            objects.append({"boxes": mk_boxes, "name": "Black", "color": "#111111FF"})
         write_3mf_objects(tmf, objects)
-        kind = ("PLAIN 3MF, no embedded mixes -- Bambu flags 'not from Bambu "
-                "Lab'; drop --plain for a real Bambu project")
+        kind = ("PLAIN 3MF (%d ramp%s), no embedded mixes -- Bambu flags 'not from "
+                "Bambu Lab'; drop --plain for a real Bambu project"
+                % (n, "s" if n > 1 else ""))
 
     stls = ""
     if opts.also_stl:

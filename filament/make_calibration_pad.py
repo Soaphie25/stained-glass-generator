@@ -84,6 +84,15 @@ def write_stl(path, boxes):
     return len(tris)
 
 
+def _shift_boxes(boxes, dx):
+    """Translate a box list by dx in X (for laying batched pads across the plate)."""
+    return [(x0 + dx, y0, z0, x1 + dx, y1, z1)
+            for (x0, y0, z0, x1, y1, z1) in boxes]
+
+
+_BATCH_PALETTE = ["#BFD8FF", "#FFD9B0", "#CDEBC5", "#E8C6E8"]
+
+
 def _boxes_to_mesh(boxes):
     """boxes -> (vertices, triangles) index lists for a 3MF <mesh>."""
     verts, tris = [], []
@@ -424,6 +433,17 @@ def main(argv=None):
     p.add_argument("--base-plate-mm", type=float, default=0.4,
                    help="continuous rigid base-plate thickness; makes the pad one "
                         "piece and is added to every cell's light path (default 0.4)")
+    p.add_argument("--count", type=int, default=1,
+                   help="BATCH: lay this many pads (1-3) across one plate, each on "
+                        "its own filament slot -- print several filaments' pads in "
+                        "one job, then break apart and shoot each (holes pads only)")
+    p.add_argument("--gap-mm", type=float, default=6.0,
+                   help="gap between batched pads (default 6)")
+    p.add_argument("--plate-mm", type=float, default=250.0,
+                   help="printer plate width for the batch fit check (default 250)")
+    p.add_argument("--colors", default=None,
+                   help="comma-separated #hex display colour per batched pad "
+                        "(default a preset palette)")
     p.add_argument("--black-markers", action="store_true",
                    help="use opaque BLACK corner caps (auto-detectable) instead of "
                         "the default corner HOLES; needs a black filament swap")
@@ -465,13 +485,27 @@ def main(argv=None):
     # calibration_pad.3mf IS the Bambu project (bundled template unless --plain
     # or a custom --bambu-template); the plain 3MF is only for non-Bambu slicers.
     holes_mode = not marker_boxes                   # default: single-filament pad
+    # BATCH: lay N pads across the plate (holes pads only -- each on its own slot)
+    n = max(1, min(3, opts.count)) if holes_mode else 1
+    step = layout["pad_w_mm"] + opts.gap_mm
+    while n > 1 and (n * layout["pad_w_mm"] + (n - 1) * opts.gap_mm) > opts.plate_mm:
+        n -= 1
+    if n < min(3, max(1, opts.count)) and holes_mode:
+        sys.stderr.write("note: %d pads don't fit %.0f mm; using %d\n"
+                         % (opts.count, opts.plate_mm, n))
+    offsets = [i * step for i in range(n)]
     from bambu_mix3mf import write_bambu_color_mix_3mf, default_template
     template = None if opts.plain else (opts.bambu_template or default_template())
     if template:
         if holes_mode:
-            bases = [{"colour": "#BFD8FF"}]
-            parts = [{"name": "body", "boxes": body_boxes, "slot": 1}]
-            kind = "Bambu project (ONE filament; corners are holes)"
+            cols = ([c.strip() for c in opts.colors.split(",")] if opts.colors
+                    else _BATCH_PALETTE)
+            bases = [{"colour": cols[i % len(cols)]} for i in range(n)]
+            parts = [{"name": "pad%d" % (i + 1),
+                      "boxes": _shift_boxes(body_boxes, off), "slot": i + 1}
+                     for i, off in enumerate(offsets)]
+            kind = ("Bambu project (%d pad%s on the plate, ONE filament each; corners"
+                    " are holes)" % (n, "s" if n > 1 else ""))
         else:
             bases = [{"colour": "#BFD8FF"}, {"colour": "#111111"}]   # body, black
             parts = [{"name": "body", "boxes": body_boxes, "slot": 1},
@@ -479,14 +513,16 @@ def main(argv=None):
             kind = "Bambu project (slot 1=transparent body, slot 2=black markers)"
         write_bambu_color_mix_3mf(tmf, template, bases, parts)
     else:
-        write_3mf(tmf, body_boxes, marker_boxes)
-        kind = ("PLAIN 3MF -- Bambu flags 'not from Bambu Lab'; drop --plain for "
-                "a real Bambu project")
+        batched = [b for off in offsets for b in _shift_boxes(body_boxes, off)]
+        write_3mf(tmf, batched, marker_boxes)   # one material (no per-pad colour)
+        kind = ("PLAIN 3MF (%d pad%s) -- Bambu flags 'not from Bambu Lab'; drop "
+                "--plain for a real Bambu project" % (n, "s" if n > 1 else ""))
 
     stls = ""
     if opts.also_stl:
         stl_body = os.path.join(out_dir, "calibration_pad_body.stl")
-        write_stl(stl_body, body_boxes)
+        write_stl(stl_body, [b for off in offsets
+                             for b in _shift_boxes(body_boxes, off)])
         stls = "  %s\n" % stl_body
         if marker_boxes:
             stl_mark = os.path.join(out_dir, "calibration_pad_markers.stl")
