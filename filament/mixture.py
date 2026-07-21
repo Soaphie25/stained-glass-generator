@@ -274,13 +274,34 @@ def run_fit(opts):
     if opts.out_dir is None:                          # natural: <root>/mix/<A>+<B>/
         opts.out_dir = os.path.join(opts.cal_root, "mix",
                                     "+".join(sorted((fA.name, fB.name))))
-    mk = None
-    if getattr(opts, "markers", None):
-        mk = [tuple(float(v) for v in p.split(",")) for p in opts.markers.split(";")]
-        if len(mk) != 4:
+    def _mk(spec):
+        if not spec:
+            return None
+        pts = [tuple(float(v) for v in p.split(",")) for p in spec.split(";")]
+        if len(pts) != 4:
             raise SystemExit("error: --markers needs 4 'x,y' points")
-    T = A._sample_cells_linear(layout, A._load_photo(opts.white), 1600, 0.03,
-                               manual_markers=mk)[0]
+        return pts
+
+    def _sample(path, markers):
+        return A._sample_cells_linear(layout, A._load_photo(path), 1600, 0.03,
+                                      manual_markers=markers)
+
+    # White measures all 3 channels; an optional colour screen re-measures ITS
+    # channel at high SNR (all the light in one channel) -- decisive when the
+    # mixture contains a PALE filament whose channels are noisy under white.
+    T = np.clip(np.asarray(_sample(opts.white, _mk(opts.markers))[0], float), 0, 1.5)
+    for scr, ch in (("red", 0), ("green", 1), ("blue", 2)):
+        path = getattr(opts, scr, None)
+        if not path:
+            continue
+        Tc, _, _, sat = _sample(path, _mk(getattr(opts, "markers_" + scr, None)))
+        if sat[ch] >= 0.99:                           # bare screen clipped -> skip
+            print("NOTE: %s screen is clipped in its channel -- kept the white "
+                  "measurement for %s." % (scr, "RGB"[ch]))
+            continue
+        T[:, ch] = np.clip(np.asarray(Tc, float)[:, ch], 0, 1.5)
+        print("using %s screen for the %s channel (higher SNR)"
+              % (scr, "RGB"[ch]))
     pads = layout["pads"]
     Tmm = layout["total_thickness_mm"]
 
@@ -348,8 +369,15 @@ def main(argv=None):
     ft.add_argument("--b", required=True, help="B filament: name=calibration.json")
     ft.add_argument("--cal-root", default="filament/calibration",
                     help="calibration root; result -> <root>/mix/<A>+<B>/")
+    ft.add_argument("--red", help="optional photo over a RED screen -- measures the "
+                    "ramp's R channel at high SNR (sharpens a PALE mixture's hue)")
+    ft.add_argument("--green", help="optional photo over a GREEN screen (G channel)")
+    ft.add_argument("--blue", help="optional photo over a BLUE screen (B channel)")
     ft.add_argument("--markers", help="bypass auto-detection with hand-picked "
-                    "corners: 'x1,y1;x2,y2;x3,y3;x4,y4' image px (any order)")
+                    "corners for the WHITE shot: 'x1,y1;...' image px (any order)")
+    ft.add_argument("--markers-red", help="hand-picked corners for the RED shot")
+    ft.add_argument("--markers-green", help="hand-picked corners for the GREEN shot")
+    ft.add_argument("--markers-blue", help="hand-picked corners for the BLUE shot")
     ft.add_argument("--out-dir", default=None,
                     help="override output folder (default <cal-root>/mix/<A>+<B>)")
     opts = p.parse_args(argv)

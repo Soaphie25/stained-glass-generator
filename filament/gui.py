@@ -250,23 +250,36 @@ def do_mixfit(data):
     if not a or not b or a == b:
         return {"ok": False, "stderr": "pick two DIFFERENT calibrated filaments "
                                        "请选择两种不同的已校准耗材"}
-    f = data.get("file")
-    if not f:
-        return {"ok": False, "stderr": "pick the mixture-pad WHITE photo "
-                                       "请选择混色标定板的白屏照片"}
+    files = data.get("files") or {}
+    if not files.get("white"):                        # back-compat: single 'file'
+        if data.get("file"):
+            files = {"white": data["file"]}
+        else:
+            return {"ok": False, "stderr": "pick the mixture-pad WHITE photo "
+                                           "请选择混色标定板的白屏照片"}
     stage = os.path.join(UPLOADS, "mix_%s_%s" % (a, b))
     os.makedirs(os.path.join(ROOT, stage), exist_ok=True)
-    ext = os.path.splitext(f.get("filename", ""))[1] or ".dng"
-    rel = os.path.join(stage, "white" + ext)
-    with open(os.path.join(ROOT, rel), "wb") as fh:
-        fh.write(base64.b64decode(f["b64"].split(",")[-1]))
     args = ["python3", "filament/mixture.py", "fit", "--layout", MIX_LAYOUT,
-            "--white", rel, "--cal-root", CALROOT,
+            "--cal-root", CALROOT,
             "--a", "%s=%s/%s/calibration.json" % (a, CALROOT, a),
             "--b", "%s=%s/%s/calibration.json" % (b, CALROOT, b)]
-    mk = data.get("markers")
-    if mk and len(mk) == 4:
-        args += ["--markers", ";".join("%.1f,%.1f" % (p[0], p[1]) for p in mk)]
+    for scr in ("white", "red", "green", "blue"):
+        fobj = files.get(scr)
+        if not fobj:
+            continue
+        ext = os.path.splitext(fobj.get("filename", ""))[1] or ".dng"
+        rel = os.path.join(stage, scr + ext)
+        with open(os.path.join(ROOT, rel), "wb") as fh:
+            fh.write(base64.b64decode(fobj["b64"].split(",")[-1]))
+        args += ["--" + scr, rel]
+    mk = data.get("markers") or {}
+    if isinstance(mk, list):                          # back-compat: bare list = white
+        mk = {"white": mk}
+    for scr in ("white", "red", "green", "blue"):
+        pts = mk.get(scr)
+        if pts and len(pts) == 4:
+            flag = "--markers" if scr == "white" else "--markers-" + scr
+            args += [flag, ";".join("%.1f,%.1f" % (p[0], p[1]) for p in pts)]
     rc, out, err = sh(args)
     pair = "+".join(sorted((a, b)))
     res = {"ok": rc == 0, "cmd": " ".join(args), "stdout": out, "stderr": err,
@@ -425,8 +438,17 @@ PAGE = """<!doctype html><html><head><meta charset=utf-8>
     <label style="min-width:90px">B (slot 2)</label><select id=mx_b></select>
     <button onclick="loadFils()" style="margin-left:8px">↻ refresh 刷新</button></div>
   <div class=row><label>white 白 *</label><input type=file id=mx_file accept="image/*,.dng,.arw,.cr2,.nef,.raf"> <span style="color:#777;font-size:12px">mixture-pad photo over white 混色板白屏照片</span></div>
-  <div class=row><button onclick="pickMarkers('mix','mx_file','mx_mk_area')">◈ Pick markers manually 手动标记角点</button>
-    <span style="color:#777;font-size:12px">if auto-detect fails · 自动识别失败时使用</span></div>
+  <div class=row><label>red 红</label><input type=file id=mx_red accept="image/*,.dng,.arw,.cr2,.nef,.raf"><span style="color:#888;font-size:12px;margin-left:8px">try ISO 160 · 1/40s 起始参考</span></div>
+  <div class=row><label>green 绿</label><input type=file id=mx_green accept="image/*,.dng,.arw,.cr2,.nef,.raf"><span style="color:#888;font-size:12px;margin-left:8px">try ISO 100 · 1/30s 起始参考</span></div>
+  <div class=row><label>blue 蓝</label><input type=file id=mx_blue accept="image/*,.dng,.arw,.cr2,.nef,.raf"><span style="color:#888;font-size:12px;margin-left:8px">try ISO 125 · 1/40s · max brightness 最大亮度</span></div>
+  <div class=row style="color:#888;font-size:12px">White alone is fine. Add the colour screen(s) to sharpen a <b>pale</b> mixture's hue — each re-measures its channel at higher SNR. Expose by the <b>lit channel's</b> R/G/B histogram (~85%), not luma.<br>只需白屏即可。<b>淡色</b>混合可另加彩色背光以校正色相——各屏高信噪比地重测对应通道。依据<b>被点亮通道</b>的 R/G/B 直方图（约 85%）曝光，而非亮度。</div>
+  <div class=row style="color:#777;font-size:12px">◈ Manual corner markers per screen (if a colour backlight washes out the black corners) · 逐屏手动标记角点（彩色背光冲淡黑角标时）</div>
+  <div class=row>
+    <button onclick="pickMarkers('mix_white','mx_file','mx_mk_area')">◈ white 白</button>
+    <button onclick="pickMarkers('mix_red','mx_red','mx_mk_area')">◈ red 红</button>
+    <button onclick="pickMarkers('mix_green','mx_green','mx_mk_area')">◈ green 绿</button>
+    <button onclick="pickMarkers('mix_blue','mx_blue','mx_mk_area')">◈ blue 蓝</button>
+  </div>
   <div id=mx_mk_area></div>
   <div class=row><button class=go id=mx_go onclick="mixfit()">Fit σ 拟合</button> <span id=mx_status></span></div>
  </fieldset>
@@ -571,8 +593,10 @@ async function loadFils(){const r=await post('/filaments',{});const fs=r.filamen
 async function mixfit(){const btn=document.getElementById('mx_go');btn.disabled=true;
  document.getElementById('mx_status').textContent='running…';
  document.getElementById('mx_result').innerHTML='';document.getElementById('mx_cmd').innerHTML='';
- const el=document.getElementById('mx_file');const file=el.files[0]?await f2b64(el.files[0]):null;
- const res=await post('/mixfit',{a:document.getElementById('mx_a').value,b:document.getElementById('mx_b').value,file,markers:mkFor('mix')});
+ const files={};
+ for(const s of ['white','red','green','blue']){const id=s==='white'?'mx_file':'mx_'+s;const el=document.getElementById(id);if(el&&el.files[0])files[s]=await f2b64(el.files[0]);}
+ const markers={white:mkFor('mix_white'),red:mkFor('mix_red'),green:mkFor('mix_green'),blue:mkFor('mix_blue')};
+ const res=await post('/mixfit',{a:document.getElementById('mx_a').value,b:document.getElementById('mx_b').value,files,markers});
  btn.disabled=false;document.getElementById('mx_status').textContent='';
  if(res.cmd)document.getElementById('mx_cmd').innerHTML='<div class=cmd>'+res.cmd+'</div>';
  let h='';

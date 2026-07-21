@@ -460,7 +460,11 @@ def _sample_cells_linear(layout, rgb0, max_dim, blur_frac, manual_markers=None):
         [sample_patch(smooth, H, c["cx"], c["cy"], c["w"], c["h"]) for c in cells],
         float) / 255.0)
     T = np.clip(cell_rgb / np.clip(ref, 1e-6, None), 0, 1.5)
-    return T, H, corners
+    # per-channel reference saturation (max window mean, linear): ~1.0 => the bare
+    # screen clipped in that channel, so its transmittance there is untrustworthy.
+    ref_sat = (win_rgb[good].max(axis=0) if good.any()
+               else np.ones(3, float))
+    return T, H, corners, ref_sat
 
 
 def measure(layout, photos, cals=None, max_dim=1600, blur_frac=0.03):
