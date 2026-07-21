@@ -430,6 +430,93 @@ def _locate(rgb, layout, dark_frac=0.10):
     return bestH[1], [square[i] for i in combo]
 
 
+def _locate_holes(rgb, layout):
+    """Locate a HOLES pad (bright corner holes instead of black caps).
+
+    The 4 corner holes and the reference windows are all BRIGHT bare-screen squares;
+    the corner holes are the outermost 4.  Detect bright square blobs, pick the 4
+    that form the largest aspect-matching quad, and orient by which labelling lands
+    the reference windows on bright spots (holes pads have no orientation dot)."""
+    reg = layout["register_markers"]["corners"]
+    names = ("top_left", "top_right", "bottom_right", "bottom_left")
+    mm = np.array([[reg[n]["cx"], reg[n]["cy"]] for n in names], float)
+    win_mm = np.array([[w["cx"], w["cy"]] for w in layout["reference_windows"]], float)
+    v = rgb.max(axis=2).astype(np.float32)
+    h, w = v.shape
+    vmax = float(v.max())
+    min_area = max(9, int(1.2e-5 * h * w))
+    seen = {}                                        # bright square blobs
+    for thr in (0.80, 0.86, 0.92):
+        for c in _components(v > thr * vmax, min_area):
+            if 0.5 <= c["w"] / max(c["h"], 1) <= 2.0 and c["area"] < 0.02 * h * w:
+                k = (round(c["cx"] / 10), round(c["cy"] / 10))
+                if k not in seen or c["area"] > seen[k]["area"]:
+                    seen[k] = c
+    square = list(seen.values())
+    if len(square) < 4:
+        raise PadDetectionError("holes pad: found only %d bright square blobs "
+                                "(need 4 corner holes) -- pick corners by hand"
+                                % len(square))
+    pts = np.array([[c["cx"], c["cy"]] for c in square], float)
+    ew, eh = np.hypot(*(mm[1] - mm[0])), np.hypot(*(mm[3] - mm[0]))
+    exp_aspect = min(ew, eh) / max(ew, eh)
+
+    cand = list(range(len(square)))
+    if len(cand) > 24:                               # corners are the outermost
+        d = ((pts - pts.mean(0)) ** 2).sum(1)
+        cand = list(np.argsort(-d)[:24])
+
+    def shape(q):
+        c = q.mean(0)
+        r = q[np.argsort(np.arctan2(q[:, 1] - c[1], q[:, 0] - c[0]))]
+        s = [np.hypot(*(r[i] - r[(i + 1) % 4])) for i in range(4)]
+        wd, ht = (s[0] + s[2]) / 2, (s[1] + s[3]) / 2
+        return min(wd, ht) / max(wd, ht, 1e-6), _quad_area(r), r
+
+    best = None                                      # the 4 corners span the pad
+    for combo in itertools.combinations(cand, 4):
+        asp, area, ring = shape(pts[list(combo)])
+        if area < 0.05 * h * w:                      # reject small (window) quads
+            continue
+        score = area * np.exp(-((asp - exp_aspect) / 0.2) ** 2)
+        if best is None or score > best[0]:
+            best = (score, ring, combo)
+    if best is None:
+        raise PadDetectionError("holes pad: no plausible corner-hole quad")
+    ring, combo = best[1], best[2]
+
+    bestH = None                                     # orient by reference windows
+    for flip in (ring, ring[::-1]):
+        for roll in range(4):
+            H = homography(mm, np.roll(flip, roll, axis=0))
+            wp = project(H, win_mm)
+            xs = np.clip(wp[:, 0], 0, w - 1).astype(int)
+            ys = np.clip(wp[:, 1], 0, h - 1).astype(int)
+            sc = float(v[ys, xs].mean())             # windows should be bright
+            if bestH is None or sc > bestH[0]:
+                bestH = (sc, H)
+    return bestH[1], [square[i] for i in combo]
+
+
+def _locate_any(rgb, layout, dark_frac=0.10):
+    """Locate the pad, trying the style the layout expects first and the other as a
+    fallback -- so a black-marker layout still works on a printed HOLES pad (and
+    vice-versa) without regenerating layout.json."""
+    reg = layout.get("register_markers", {})
+    holes_first = (reg.get("style") == "holes"
+                   or "orientation_dot" not in reg.get("corners", {}))
+    black = lambda: _locate(rgb, layout, dark_frac=dark_frac)  # noqa: E731
+    holes = lambda: _locate_holes(rgb, layout)                 # noqa: E731
+    order = (holes, black) if holes_first else (black, holes)
+    err = None
+    for fn in order:
+        try:
+            return fn()
+        except PadDetectionError as e:
+            err = e
+    raise err
+
+
 def _prep(rgb, max_dim, blur_frac, H_probe=None):
     """Downscale a big phone photo (speed + mild anti-alias) and return it."""
     im = Image.fromarray(rgb)
@@ -455,7 +542,7 @@ def _sample_cells_linear(layout, rgb0, max_dim, blur_frac, manual_markers=None):
         H = _manual_H(layout, pts, rgb)
         corners = [{"cx": x, "cy": y} for x, y in pts]
     else:
-        H, corners = _locate(rgb, layout)
+        H, corners = _locate_any(rgb, layout)
     c0 = cells[0]
     cpx = float(np.hypot(*(project(H, [(c0["cx"] + c0["w"] / 2, c0["cy"])])[0]
                            - project(H, [(c0["cx"] - c0["w"] / 2, c0["cy"])])[0])))
@@ -739,7 +826,7 @@ def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10
             corners = [{"cx": x, "cy": y} for x, y in pts]
         else:
             try:
-                H, corners = _locate(rgb, layout, dark_frac=dark_frac)
+                H, corners = _locate_any(rgb, layout, dark_frac=dark_frac)
             except PadDetectionError as e:           # skip this shot, keep going
                 skipped.append((screen, str(e)))
                 continue
