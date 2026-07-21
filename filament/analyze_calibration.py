@@ -787,16 +787,24 @@ def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10
     # headline: per-channel absorption from the WHITE screen -- the physically
     # correct basis for backlit-WHITE panes (white light through the filament ->
     # camera RGB is exactly what a pane does) and the easiest to expose cleanly.
-    # A matching colour screen is a fallback only if white wasn't shot; the R/G/B
-    # screens are optional extra spectral detail, not required.
+    # Per channel, prefer the dedicated colour screen (red->R, green->G, blue->B)
+    # WHEN it was shot and is the cleaner fit: a colour screen puts all the light
+    # in one channel, so the absorption is measured at much higher SNR -- decisive
+    # for pale / spectrally-structured filaments (e.g. yellow) whose R/G channels
+    # are noisy under white and drift the hue.  Otherwise fall back to white, which
+    # is the default and the physically-correct band-average for white-lit viewing.
     primary = {}
+    prim_src = {}
     diag_of = {"R": "red", "G": "green", "B": "blue"}
     for cname in CHANNELS:
         wfit = screens.get("white", {}).get("per_channel", {}).get(cname)
         dfit = screens.get(diag_of[cname], {}).get("per_channel", {}).get(cname)
-        src = wfit or dfit
+        use_diag = (dfit and not dfit.get("floored") and
+                    dfit.get("r2", 0.0) > (wfit.get("r2", -1.0) if wfit else -1.0))
+        src = dfit if use_diag else (wfit or dfit)
         if src:
             primary[cname] = round(src["a"], 5)
+            prim_src[cname] = diag_of[cname] if src is dfit else "white"
 
     cal = {
         "filament": name,
@@ -804,6 +812,7 @@ def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10
         "layer_height_mm": layer_mm,        # a only valid at THIS print layer height
         "step_mm": layout["step_mm"], "max_mm": layout["max_mm"],
         "primary_absorption_per_mm": primary,
+        "primary_source": prim_src,          # which screen fixed each channel's a
         "screens": screens,
         "samples": samples,
         "warnings": _quality_warnings(screens),
@@ -1268,8 +1277,11 @@ def main(argv=None):
         sys.stderr.write("wrote %s (+ detect_*.png, curves.png)\n" % out)
     rel = cal["reliability"]
     sys.stderr.write("\nfilament class: %s\n" % rel["filament_class"].upper())
+    psrc = cal.get("primary_source", {})
     for c in ("R", "G", "B"):
-        sys.stderr.write("  channel %s: %s\n" % (c, rel["per_channel"][c]))
+        via = psrc.get(c, "white")
+        tag = "" if via == "white" else "   [from %s screen -- higher SNR]" % via
+        sys.stderr.write("  channel %s: %s%s\n" % (c, rel["per_channel"][c], tag))
     sys.stderr.write("\nCAPTURE REQUIREMENTS\n")
     sys.stderr.write("  colour   : %s\n" % rel["color_requirement"])
     sys.stderr.write("  exposure : %s\n" % rel["exposure_requirement"])
