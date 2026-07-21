@@ -175,7 +175,20 @@ def _cal_payload(name):
         p = "%s/%s" % (d0, f)
         if os.path.isfile(os.path.join(ROOT, p)):
             imgs.append(p)
+    # backlit colour at a range of print depths (the actual pane appearance)
+    depth_colors = []
+    try:
+        from solve_recipe import load_filament, linear_to_hex, predict_linear
+        capath = os.path.join(ROOT, d0, "calibration.json")
+        if not os.path.isfile(capath):
+            capath = os.path.join(ROOT, d0, "calibration_INVALID.json")
+        fil = load_filament(name, capath)
+        for t in (0.4, 0.8, 1.2, 1.6, 2.0, 2.5, 3.0):
+            depth_colors.append([t, "#" + linear_to_hex(predict_linear([fil], [t]))])
+    except Exception:
+        pass
     return {"name": name, "primary": cal.get("primary_absorption_per_mm"),
+            "depth_colors": depth_colors,
             "reliability": cal.get("reliability"),
             "warnings": cal.get("warnings", []),
             "screens": {s: {"max_ref": d.get("max_ref"),
@@ -546,6 +559,10 @@ function renderCal(res,target){
  else if(res.primary){h+='<div class=done>'+(res.loaded?'📂 loaded · 已加载 ':'✓ calibrated · 校准成功 ')+'&nbsp;→ filament/calibration/'+nm+'/</div>';}
  const rel=res.reliability;
  if(res.primary&&!badpad){h+='<div class=ok><b>absorption /mm · 吸收系数</b> &nbsp; R '+res.primary.R+' &nbsp; G '+res.primary.G+' &nbsp; B '+res.primary.B+'</div>';}
+ if(res.depth_colors&&res.depth_colors.length&&!badpad){
+   h+='<div class=ok><b>backlit colour by depth · 各厚度背光颜色</b><div style="display:flex;gap:2px;margin-top:6px;flex-wrap:wrap">';
+   res.depth_colors.forEach(dc=>{h+='<div style="text-align:center;font-size:11px;color:#555"><div style="width:54px;height:54px;background:'+dc[1]+';border:1px solid #bbb;border-radius:4px"></div>'+dc[0]+'mm<br>'+dc[1]+'</div>';});
+   h+='</div><span style="color:#888;font-size:12px">how a solid pane of this filament looks backlit, at each print thickness · 该耗材实心板在各打印厚度下背光的样子</span></div>';}
  if(rel){const CLS={'intense':'INTENSE 强吸收','normal-transparent':'normal 普通透明'};
    h+='<p><b>class 类别:</b> '+(CLS[rel.filament_class]||rel.filament_class);
    if(rel.mix_advice)h+='<br><span style="color:#b33">⚠ '+rel.mix_advice+'<br>该耗材吸收极强，混色占比请低于上限，否则会盖过其它颜色。</span>';h+='</p>';}
