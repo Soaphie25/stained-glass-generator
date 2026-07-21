@@ -364,9 +364,10 @@ PAGE = """<!doctype html><html><head><meta charset=utf-8>
   <div class=row><label>name 名称</label><input type=text id=c_name placeholder="e.g. amber 例：琥珀">
     <label style="min-width:110px">layer 层高 (mm)</label><input type=number id=c_layer value="0.2" step="0.1" style="width:70px"></div>
   <div class=row><label>white 白 *</label><input type=file id=f_white accept="image/*,.dng,.arw,.cr2,.nef,.raf"></div>
-  <div class=row><label>red 红</label><input type=file id=f_red accept="image/*,.dng,.arw,.cr2,.nef,.raf"></div>
-  <div class=row><label>green 绿</label><input type=file id=f_green accept="image/*,.dng,.arw,.cr2,.nef,.raf"></div>
-  <div class=row><label>blue 蓝</label><input type=file id=f_blue accept="image/*,.dng,.arw,.cr2,.nef,.raf"></div>
+  <div class=row><label>red 红</label><input type=file id=f_red accept="image/*,.dng,.arw,.cr2,.nef,.raf"><span style="color:#888;font-size:12px;margin-left:8px">try ISO 160 · 1/40s 起始参考</span></div>
+  <div class=row><label>green 绿</label><input type=file id=f_green accept="image/*,.dng,.arw,.cr2,.nef,.raf"><span style="color:#888;font-size:12px;margin-left:8px">try ISO 125 · 1/30s 起始参考</span></div>
+  <div class=row><label>blue 蓝</label><input type=file id=f_blue accept="image/*,.dng,.arw,.cr2,.nef,.raf"><span style="color:#888;font-size:12px;margin-left:8px">try ISO 125 · 1/40s · max screen brightness 最大亮度</span></div>
+  <div class=row style="color:#888;font-size:12px">Suggested START settings only — then fine-tune by the <b>lit channel's</b> R/G/B histogram (~85%), not luma.<br>仅为起始参考——再依据<b>被点亮通道</b>的 R/G/B 直方图（约 85%）微调，而非亮度直方图。</div>
   <div class=row style="color:#777;font-size:12px">White alone works for most filaments. Add the matching colour screen(s) to sharpen the hue of a <b>pale</b> or <b>intense</b> filament — each colour screen measures its channel (R/G/B) at far higher SNR, and is used automatically when it's the cleaner fit.<br>大多数耗材只需白屏。<b>淡色</b>或<b>强吸收</b>耗材可另加对应彩色背光以校正色相——彩色屏能高信噪比地测量该通道，拟合更干净时会自动采用。</div>
   <div class=row style="color:#777;font-size:12px">◈ Pick markers manually per screen — use if auto-detect grabs the wrong squares, e.g. a colour backlight washes out the black corners · 手动标记角点（逐屏）——自动识别选错方块时使用，例如彩色背光下黑角标被冲淡</div>
   <div class=row>
