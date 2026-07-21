@@ -393,33 +393,42 @@ def solve_target_sublayer(target_hex, pool, sigma, pair_sigma=None, ratio_step=0
     """Best sub-layer recipe for one target.  Pass a precomputed ``cands`` (from
     sublayer_candidates) to reuse the LUT across many targets."""
     target_lin = hex_to_linear(target_hex)
+    tlab = linear_to_lab(target_lin)
     if cands is None:
         cands = sublayer_candidates(pool, sigma, pair_sigma, tmin, tmax, layer,
                                     max_filaments)
+    # HUE-FIRST selection metric: weight the chromatic (a*,b* = hue + chroma) plane
+    # fully but the L* (brightness) axis only W_L, so among recipes the solver keeps
+    # the HUE and tolerates a brightness error -- avoids picking a red+blue mix for a
+    # blue/green target just because its lightness happened to match (out of gamut).
+    W_L = 0.35
     scored = []
     for c in cands:
         d = {k: v for k, v in c.items() if k != "_lin"}
-        d["delta_e"] = round(delta_e(target_lin, c["_lin"]), 3)
+        lab = linear_to_lab(c["_lin"])
+        d["delta_e"] = round(float(np.linalg.norm(tlab - lab)), 3)
+        d["_sel"] = float(W_L * (tlab[0] - lab[0]) ** 2
+                          + (tlab[1] - lab[1]) ** 2 + (tlab[2] - lab[2]) ** 2)
         scored.append(d)
     if not scored:
         return {"target_hex": target_hex.lower(), "delta_e": None}
     scored.sort(key=lambda c: c["delta_e"])
     if max_delta is not None:
-        # tiered: use the FEWEST filaments whose best match is already within
-        # max_delta (a good-enough single beats any mix); else the overall best.
+        # tiered: FEWEST filaments that can reach within max_delta; among those
+        # acceptable-quality recipes pick the most HUE-accurate (min _sel).  Out of
+        # gamut (none within max_delta) -> the most hue-accurate recipe overall.
         chosen = None
         for n in sorted({c["n"] for c in scored}):
-            best_n = min((c for c in scored if c["n"] == n),
-                         key=lambda c: c["delta_e"])
-            if best_n["delta_e"] <= max_delta:
-                chosen = best_n
+            within = [c for c in scored if c["n"] == n and c["delta_e"] <= max_delta]
+            if within:
+                chosen = min(within, key=lambda c: c["_sel"])
                 break
         if chosen is None:
-            chosen = scored[0]
+            chosen = min(scored, key=lambda c: c["_sel"])
     else:
         best_de = scored[0]["delta_e"]
         near = [c for c in scored if c["delta_e"] <= best_de + tol_de]
-        chosen = min(near, key=lambda c: (c["n"], c["delta_e"]))  # prefer simpler
+        chosen = min(near, key=lambda c: (c["n"], c["_sel"]))  # simpler, then hue
     single = min((c for c in scored if c["n"] == 1),
                  key=lambda c: c["delta_e"], default=None)
     return {"target_hex": target_hex.lower(), "recommended": chosen,
