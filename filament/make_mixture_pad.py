@@ -15,9 +15,11 @@ Design (per the agreed spec):
     pad i = (N-i)/N of A + i/N of B.  Each pad is a solid block sitting DIRECTLY
     on the screen, so pad 0 and pad N are exactly A and B in the light path.
   * The pads are tied into ONE rigid piece by a thin connective WEB in the gaps
-    only (never under a pad, so it can't tint the mix); the web carries the black
-    register markers.
+    only (never under a pad, so it can't tint the mix).
   * Reference windows are HOLES through the web (bare-screen normalisation).
+  * 4 corner registration squares -- DEFAULT: square HOLES through the web (bright
+    when backlit), so the pad prints in ONLY the two mix filaments (no black swap);
+    hand-pick them in the analyser.  --black-markers = opaque caps (needs a swap).
 
 Each pad is emitted as its OWN 3MF object so a per-pad mix ratio can be attached.
 The authoritative ratios are in ``layout.json``.  Embedding the ratio in Bambu's
@@ -95,8 +97,8 @@ def write_3mf_objects(path, objects, offset=(10.0, 10.0)):
 
 
 def _pad_parts(layout, pad_objs, web_boxes, mk_boxes):
-    """Map the mixture pad to bambu_mix3mf parts: bases 1=A, 2=B, 3=black; each
-    interior pad is a mix of slots 1,2; web -> A; markers -> black."""
+    """Map the mixture pad to bambu_mix3mf parts: bases 1=A, 2=B (+3=black only if
+    there are marker caps); each interior pad is a mix of slots 1,2; web -> A."""
     steps = layout["steps"]
     ca, cb = np.array([70, 130, 210]), np.array([220, 140, 60])
     parts = []
@@ -112,8 +114,16 @@ def _pad_parts(layout, pad_objs, web_boxes, mk_boxes):
                           "mix": {"components": [1, 2], "ratios": [1 - b, b],
                                   "colour": col}})
     parts.append({"name": "web_A", "boxes": web_boxes, "slot": 1})
-    parts.append({"name": "markers", "boxes": mk_boxes, "slot": 3})
+    if mk_boxes:                                     # black caps only in that mode
+        parts.append({"name": "markers", "boxes": mk_boxes, "slot": 3})
     return parts
+
+
+def _bases(mk_boxes):
+    b = [{"colour": "#66A3D2"}, {"colour": "#D2A366"}]           # A, B
+    if mk_boxes:
+        b.append({"colour": "#111111"})                          # black caps
+    return b
 
 
 BASES = [{"colour": "#66A3D2"}, {"colour": "#D2A366"}, {"colour": "#111111"}]
@@ -175,33 +185,42 @@ def build_layout(opts):
                                 "r": round(wr, 3)})
                 win_holes.append((wx - wr, wy - wr, wx + wr, wy + wr))
 
-    # connective WEB (filament A, unsampled): whole pad minus pad footprints and
-    # window holes -> one rigid piece without tinting any pad's light path.
-    web = opts.web_mm
-    web_boxes = _plate_with_holes(0, 0, pad_w, pad_h, 0.0, web,
-                                  pad_holes + win_holes)
-
-    # BLACK register caps on top of the web corners (+ orientation dot)
+    # 4 corner registration squares.  DEFAULT: square HOLES through the web (bright
+    # when backlit) so the pad prints in ONLY the two mix filaments (no black swap);
+    # hand-pick the corners in the analyser.  --black-markers = opaque caps (needs a
+    # black filament + a swap, auto-detectable).
     mk, inset, cap = opts.marker_mm, opts.marker_inset_mm, opts.marker_h_mm
-    mz0, mz1 = web, round(web + cap, 4)
-    corners = {
+    corner_xy = {
         "bottom_left":  (inset, inset),
         "bottom_right": (pad_w - inset - mk, inset),
         "top_right":    (pad_w - inset - mk, pad_h - inset - mk),
         "top_left":     (inset, pad_h - inset - mk),
     }
-    mk_boxes, reg = [], {}
-    for name, (mx0, my0) in corners.items():
-        mk_boxes.append((mx0, my0, mz0, mx0 + mk, my0 + mk, mz1))
+    reg, corner_holes = {}, []
+    for name, (mx0, my0) in corner_xy.items():
         reg[name] = {"cx": round(mx0 + mk / 2, 3), "cy": round(my0 + mk / 2, 3),
                      "w": mk, "h": mk}
-    dot = mk * 0.45
-    dx0, dy0 = inset + mk + opts.marker_gap_mm, pad_h - inset - mk * 0.45
-    mk_boxes.append((dx0, dy0, mz0, dx0 + dot, dy0 + dot, mz1))
-    reg["orientation_dot"] = {"cx": round(dx0 + dot / 2, 3),
-                              "cy": round(dy0 + dot / 2, 3),
-                              "w": round(dot, 3), "h": round(dot, 3),
-                              "note": "black dot next to the TOP-LEFT corner"}
+        if not opts.black_markers:
+            corner_holes.append((mx0, my0, mx0 + mk, my0 + mk))
+
+    # connective WEB (filament A, unsampled): whole pad minus pad footprints, window
+    # holes and (holes mode) corner holes -> one rigid piece, no tinting of any pad.
+    web = opts.web_mm
+    web_boxes = _plate_with_holes(0, 0, pad_w, pad_h, 0.0, web,
+                                  pad_holes + win_holes + corner_holes)
+
+    mk_boxes = []
+    if opts.black_markers:                           # opaque caps + orientation dot
+        mz0, mz1 = web, round(web + cap, 4)
+        for name, (mx0, my0) in corner_xy.items():
+            mk_boxes.append((mx0, my0, mz0, mx0 + mk, my0 + mk, mz1))
+        dot = mk * 0.45
+        dx0, dy0 = inset + mk + opts.marker_gap_mm, pad_h - inset - mk * 0.45
+        mk_boxes.append((dx0, dy0, mz0, dx0 + dot, dy0 + dot, mz1))
+        reg["orientation_dot"] = {"cx": round(dx0 + dot / 2, 3),
+                                  "cy": round(dy0 + dot / 2, 3),
+                                  "w": round(dot, 3), "h": round(dot, 3),
+                                  "note": "black dot next to the TOP-LEFT corner"}
 
     layout = {
         "units": "mm", "mode": "sub-layer-mixture",
@@ -215,8 +234,12 @@ def build_layout(opts):
         "origin": "bottom-left",
         "pad_corners": [[0, 0], [pad_w, 0], [pad_w, pad_h], [0, pad_h]],
         "register_markers": {
-            "color": "black opaque cap on top of the web (separate part)",
-            "cap_mm": cap, "size_mm": mk, "z_mm": [mz0, mz1], "corners": reg},
+            "style": "black_caps" if opts.black_markers else "holes",
+            "color": ("black opaque cap on top of the web (separate part)"
+                      if opts.black_markers else
+                      "square HOLE through the web (bright when backlit); hand-pick "
+                      "these 4 corners -- pad is only the two mix filaments"),
+            "size_mm": mk, "corners": reg},
         "pads": pads,
         "reference_windows": windows,
     }
@@ -252,11 +275,16 @@ def write_preview(layout, path, px_per_mm=8):
         d.rectangle([x0, y0, x1, y1], fill=col, outline=(70, 70, 80))
         d.text((x0 + 3, y0 + 3), "%d%%B" % p["pct_b"],
                fill=(255, 255, 255) if 20 < p["pct_b"] < 90 else (30, 30, 30))
+    holes_style = layout["register_markers"].get("style") == "holes"
     for name, m in layout["register_markers"]["corners"].items():
-        oc = (230, 40, 40) if name == "orientation_dot" else (0, 0, 0)
+        if holes_style:
+            fill, oc = (255, 255, 255), (150, 150, 160)   # bright bare-screen holes
+        else:
+            fill = (15, 15, 15)
+            oc = (230, 40, 40) if name == "orientation_dot" else (0, 0, 0)
         d.rectangle([X(m["cx"] - m["w"] / 2), Y(m["cy"] + m["h"] / 2),
                      X(m["cx"] + m["w"] / 2), Y(m["cy"] - m["h"] / 2)],
-                    fill=(15, 15, 15), outline=oc, width=2)
+                    fill=fill, outline=oc, width=2)
     img.save(path)
 
 
@@ -281,6 +309,9 @@ def main(argv=None):
     p.add_argument("--header-mm", type=float, default=9.0)
     p.add_argument("--web-mm", type=float, default=0.3,
                    help="connective web thickness in the gaps (default 0.3)")
+    p.add_argument("--black-markers", action="store_true",
+                   help="use opaque BLACK corner caps (auto-detectable, needs a "
+                        "black filament swap) instead of the default corner HOLES")
     p.add_argument("--marker-mm", type=float, default=6.0)
     p.add_argument("--marker-inset-mm", type=float, default=1.0)
     p.add_argument("--marker-h-mm", type=float, default=0.4)
@@ -301,10 +332,10 @@ def main(argv=None):
     os.makedirs(out_dir, exist_ok=True)
 
     layout, pad_objs, web_boxes, mk_boxes = build_layout(opts)
-    objects = pad_objs + [
-        {"boxes": web_boxes, "name": "web_A", "color": "#CFE6FFCC"},
-        {"boxes": mk_boxes, "name": "Black", "color": "#111111FF"},
-    ]
+    objects = pad_objs + [{"boxes": web_boxes, "name": "web_A",
+                           "color": "#CFE6FFCC"}]
+    if mk_boxes:
+        objects.append({"boxes": mk_boxes, "name": "Black", "color": "#111111FF"})
     tmf = os.path.join(out_dir, "mixture_pad.3mf")
     lay = os.path.join(out_dir, "layout.json")
     prev = os.path.join(out_dir, "mixture_pad_preview.png")
@@ -317,9 +348,9 @@ def main(argv=None):
     template = None if opts.plain else (opts.bambu_template or default_template())
     if template:
         parts = _pad_parts(layout, pad_objs, web_boxes, mk_boxes)
-        info = write_bambu_color_mix_3mf(tmf, template, BASES, parts)
-        kind = ("Bambu project, %d filament slots (1=A, 2=B, 3=black, 4-%d=mixes), "
-                "ratios pre-set" % (info["n_slots"], info["n_slots"]))
+        info = write_bambu_color_mix_3mf(tmf, template, _bases(mk_boxes), parts)
+        kind = ("Bambu project, %d filament slots (1=A, 2=B%s, mixes), ratios pre-set"
+                % (info["n_slots"], ", 3=black" if mk_boxes else "; corners are HOLES"))
     else:
         write_3mf_objects(tmf, objects)
         kind = ("PLAIN 3MF, no embedded mixes -- Bambu flags 'not from Bambu "
@@ -329,8 +360,9 @@ def main(argv=None):
     if opts.also_stl:
         allb = [b for o in pad_objs for b in o["boxes"]] + web_boxes
         write_stl(os.path.join(out_dir, "mixture_pad_body.stl"), allb)
-        write_stl(os.path.join(out_dir, "mixture_pad_markers.stl"), mk_boxes)
-        stls = "  (+ body/markers STL)\n"
+        stls = "  (+ body STL)\n"
+        if mk_boxes:
+            write_stl(os.path.join(out_dir, "mixture_pad_markers.stl"), mk_boxes)
 
     sys.stderr.write(
         "mixture pad %.1f x %.1f mm | %d solid pads 0..100%%B in %d%% steps | "
