@@ -648,6 +648,9 @@ async function mixfit(){const btn=document.getElementById('mx_go');btn.disabled=
    const lines=t.split('\\n'),ei=lines.findIndex(l=>l.indexOf('ENDPOINT MISMATCH')>=0);
    if(ei>=0){const blk=[];for(let i=ei;i<lines.length;i++){if(i>ei&&(lines[i].trim()===''||lines[i].indexOf('wrote')===0))break;blk.push(lines[i]);}
      h+='<div class=warn><b>⚠ Endpoint mismatch 端点不匹配</b><pre class=out>'+blk.join('\\n')+'</pre><span style="color:#555">The ramp ends disagree with the single-filament cals, so σ is unreliable. Re-calibrate the flagged filament(s) and reshoot on the same pad. 渐变端点与单色校准不符，σ 不可靠——请重新校准被标记的耗材并在同一板上重拍。</span></div>';}
+   const ai=lines.findIndex(l=>l.indexOf('anchored them to the single-cal')>=0);
+   if(ai>=0){const blk=[];for(let i=ai;i<lines.length;i++){if(i>ai&&(lines[i].trim()===''||lines[i].indexOf('wrote')===0||lines[i].indexOf('model')===0))break;blk.push(lines[i]);}
+     h+='<div class=info><b>⚓ Ends anchored to ironed single-cals 端点已锚定到熨烫单色校准</b><pre class=out>'+blk.join('\\n')+'</pre><span style="color:#555">The pure ends had mixture-pad line artifacts, so they were replaced with the ironed single-cal values; σ was fit from the ramp middle. Reprint the ramp ironed for a fully clean fit. 纯色端点有打印纹理伪影，已用熨烫单色校准值替代，σ 由渐变中段拟合；如需完全干净可熨烫重打渐变板。</span></div>';}
    if(res.images)res.images.forEach(p=>h+=img(p));
    h+='<details><summary>raw table 原始数据</summary><pre class=out>'+t+'</pre></details>';}
  document.getElementById('mx_result').innerHTML=h;}

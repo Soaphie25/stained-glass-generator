@@ -347,6 +347,26 @@ def run_fit(opts):
               "different rotations; A+B mixing is symmetric)."
               % (", ".join(flips), fA.name))
     T = np.clip(np.asarray(T, float), 0, 1)
+    # The mixture pad's PURE ends carry the same print-line artifact we IRON away for
+    # the single cals -- and those single cals are the clean truth for pad0/padN.  So
+    # if a measured end is off, ANCHOR it to the ironed single-cal (predA/predB) before
+    # fitting sigma: only the ramp MIDDLE (the real A+B mix) then drives sigma, and you
+    # don't have to iron+reprint the whole ramp.  --raw-ends keeps the measured ends.
+    ENDPOINT_TOL = 10.0
+    anchored = []
+    if not getattr(opts, "raw_ends", False):
+        for idx, pred, nm, pct in ((0, predA, fA.name, 0),
+                                   (-1, predB, fB.name, int(pads[-1]["pct_b"]))):
+            e = delta_e(np.clip(T[idx], 0, 1), pred)
+            if e > ENDPOINT_TOL:
+                T[idx] = pred
+                anchored.append((nm, pct, round(float(e), 1)))
+    if anchored:
+        print("NOTE: pure end(s) deviate from the IRONED single-cal (mixture-pad line "
+              "artifact) -- anchored them to the single-cal; sigma fit from the middle:")
+        for nm, pct, e in anchored:
+            print("   pad%d pure %s was off by dE %.1f -> using its single-cal value "
+                  "(reprint the ramp ironed for a fully clean fit)" % (pct, nm, e))
     pair = {"A": fA.name, "B": fB.name,
             "ratios": [p["pct_b"] / 100.0 for p in pads],
             "tau": [[float(x) for x in T[i]] for i in range(len(pads))]}
@@ -426,6 +446,8 @@ def run_fit(opts):
                    "endpoint_de": {fA.name: round(float(endA), 2),
                                    fB.name: round(float(endB), 2)},
                    "endpoint_ok": bool(endpoint_ok),
+                   "ends_anchored": [{"filament": nm, "pct_b": pct, "raw_de": e}
+                                     for nm, pct, e in anchored],
                    "measured_tau": pair["tau"], "ratios": pair["ratios"]}, f, indent=2)
     print("\nwrote %s/mixture_calibration.json" % opts.out_dir)
     return 0
@@ -456,6 +478,10 @@ def main(argv=None):
                     help="override the pad's total light path in mm (default from "
                          "layout). Use when the printed pad is thicker/thinner than "
                          "recorded -- the endpoint check will suggest a value")
+    ft.add_argument("--raw-ends", action="store_true",
+                    help="keep the measured pure-A/pure-B ends instead of anchoring "
+                         "them to the ironed single-cals (default: anchor when a "
+                         "non-ironed ramp end deviates > dE 10)")
     ft.add_argument("--out-dir", default=None,
                     help="override output folder (default <cal-root>/mix/<A>+<B>)")
     opts = p.parse_args(argv)
