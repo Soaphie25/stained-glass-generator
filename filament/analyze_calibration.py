@@ -47,6 +47,12 @@ from PIL import Image, ImageDraw, ImageFilter
 
 
 CHANNELS = ("R", "G", "B")
+# Above this white-measured absorption (per mm) a channel is "strongly absorbed":
+# a colour screen's narrow primary then reads a different band than broadband white
+# (metamerism) so white wins; below it the bands agree and the colour screen's
+# higher SNR wins.  Calibrated against red (G/B ~0.7 white-correct) vs light-blue
+# (R ~0.3 colour-correct).
+STRONG_A_PER_MM = 0.5
 
 
 # --------------------------------------------------------------------------- #
@@ -819,14 +825,17 @@ def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10
         d_ok = dfit and not dfit.get("floored") and not dclip
         if not wfit:
             use_diag = bool(d_ok)                     # colour screen is the only source
+        elif not d_ok:
+            use_diag = False
         else:
-            # Only OVERRIDE white when white is genuinely noisy (pale/weak channel)
-            # AND the colour screen is clearly cleaner.  A strongly-absorbed channel
-            # with a clean white fit stays on white: its narrow-primary reading is a
-            # different band (metamerism) and white is the correct band-average for
-            # white-lit viewing.
-            use_diag = bool(d_ok and wfit.get("r2", 0.0) < 0.88 and
-                            dfit.get("r2", 0.0) > wfit.get("r2", 0.0) + 0.05)
+            # Choose by ABSORPTION STRENGTH, not r2 (r2 misleads: a dim white channel
+            # can fit a clean-but-biased slope -> high r2, wrong a; e.g. light-blue R
+            # white 0.33/r2 .62 vs red-screen 0.18).  A colour screen puts all light
+            # in one channel = high SNR, and for WEAK/MODERATE absorption its narrow
+            # primary ~= the broadband band-average, so it wins.  For STRONG absorption
+            # the narrow primary reads a different band (metamerism -> red's G/B: white
+            # 0.78/0.64 vs colour 0.38/0.46) and white is the correct band-average.
+            use_diag = wfit.get("a", 0.0) < STRONG_A_PER_MM
         src = dfit if use_diag else (wfit or dfit)
         if src:
             primary[cname] = round(src["a"], 5)
