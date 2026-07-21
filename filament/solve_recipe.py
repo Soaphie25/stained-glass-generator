@@ -135,7 +135,15 @@ def load_filament(name, cal_path):
         else:
             raise SystemExit("error: %s has no absorption for channel %s" %
                              (cal_path, c))
-        T0.append(white[c]["T0"] if c in white else 0.92)
+        # Surface term T0 is physically ~0.92 (two air/plastic interfaces lose ~8%).
+        # A measured T0 well below that means the fit's INTERCEPT absorbed print-line
+        # SCATTERING -- pronounced on a weakly-absorbing filament whose curve is
+        # nearly flat, so the intercept soaks up the dimming (e.g. light-blue read
+        # ~0.5).  That's not a surface term; it wrongly darkens thin panes and made
+        # 4-colour disagree with 3-colour (which used the 0.92 default).  Bound it;
+        # out of the physical range -> use the default.
+        t0 = white[c]["T0"] if c in white else 0.92
+        T0.append(t0 if 0.82 <= t0 <= 1.0 else 0.92)
     max_frac = cal.get("reliability", {}).get("recommended_max_mix_fraction", 1.0)
     return Filament(name, a, T0, max_frac=max_frac)
 
