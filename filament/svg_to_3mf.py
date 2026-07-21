@@ -474,26 +474,13 @@ def build_3mf(frag_dir, cal_root, out_path, thickness=1.6, max_delta=20.0,
     slot_of = {n: i + 1 for i, n in enumerate(names)}
     black_slot = len(names) + 1
 
-    # GROUP panes by their final recipe -> ONE object per printed colour, so a whole
-    # colour can be reselected/reassigned in one go in Bambu Studio.
-    groups = {}
-    for it in items:
-        groups.setdefault(targets[it["hex"]], []).append(it)
-
     parts = []
-    for tgt in sorted(groups, key=lambda t: -sum(i["area"] for i in groups[t])):
-        rec = rec_cache[tgt]
-        verts, tris = [], []                         # merge all panes of this colour
-        for it in groups[tgt]:
-            v, t = extrude(it["rings"], 0.0, thickness, flip_h=H)
-            off = len(verts)
-            verts.extend(v)
-            tris.extend((a + off, b + off, c + off) for (a, b, c) in t)
-        if not tris:
+    for it in items:                                 # one object per source fragment
+        rec = rec_cache[targets[it["hex"]]]
+        v, t = extrude(it["rings"], 0.0, thickness, flip_h=H)
+        if not t:
             continue
-        label = "-".join("%s%d" % (n, f)
-                         for n, f in zip(rec["filaments"], rec["fracs_pct"]))
-        part = {"name": "%s_%s" % (rec["predicted_hex"], label), "mesh": (verts, tris)}
+        part = {"name": "c_%s" % it["hex"], "mesh": (v, t)}
         if rec["n"] == 1:
             part["slot"] = slot_of[rec["filaments"][0]]
         else:
