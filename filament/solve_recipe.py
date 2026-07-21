@@ -322,15 +322,22 @@ def predict_mix_linear(fils, sigs, fracs, thickness):
 
 
 def sublayer_candidates(pool, sigma, pair_sigma=None, tmin=0.4, tmax=3.0,
-                        layer=0.2, max_filaments=2):
+                        layer=0.2, max_filaments=2, cap_intense_singles=True):
     """The full set of PRINTABLE sub-layer recipes with their predicted backlit
     colour -- this IS the colour LUT.  Singles, plus 2-/3-filament mixes at
     printable ratios over a thickness grid, honouring each intense filament's mix
     cap and using a directly-calibrated pair's posterior sigma when available.
-    Each entry keeps ``_lin`` (linear RGB) for downstream Delta-E / Lab."""
+    Each entry keeps ``_lin`` (linear RGB) for downstream Delta-E / Lab.
+
+    ``cap_intense_singles``: when a PALE diluent is in the pool, drop the 100% pure
+    pane of an INTENSE filament -- it must then appear only within its mix cap (e.g.
+    <=35% blue), so an intense colour can't dominate the panel as a solid pane."""
     thicks = np.round(np.arange(tmin, tmax + 1e-9, layer), 3)
     ratios = [r for r in PRINTABLE_RATIOS if 0 < r < 1]   # slicer-buildable only
     out = []
+    # a pale diluent = a non-intense filament that's light enough to dilute with
+    has_pale = any(m.max_frac >= 1.0 - 1e-9 and float(np.max(m.a)) < 0.45
+                   for m in pool)
 
     def emit(lin, rec):
         rec["_lin"] = lin
@@ -338,6 +345,8 @@ def sublayer_candidates(pool, sigma, pair_sigma=None, tmin=0.4, tmax=3.0,
         out.append(rec)
 
     for m in pool:                                       # single (pure) pane
+        if cap_intense_singles and has_pale and m.max_frac < 1.0 - 1e-9:
+            continue                                     # intense: dilute, don't solo
         for T in thicks:
             emit(predict_linear([m], [T]),
                  {"n": 1, "filaments": [m.name], "fracs_pct": [100],
