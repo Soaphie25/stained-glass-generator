@@ -280,6 +280,9 @@ def do_mixfit(data):
         if pts and len(pts) == 4:
             flag = "--markers" if scr == "white" else "--markers-" + scr
             args += [flag, ";".join("%.1f,%.1f" % (p[0], p[1]) for p in pts)]
+    thk = (data.get("thickness") or "").strip()
+    if thk:
+        args += ["--thickness", thk]
     rc, out, err = sh(args)
     pair = "+".join(sorted((a, b)))
     res = {"ok": rc == 0, "cmd": " ".join(args), "stdout": out, "stderr": err,
@@ -450,6 +453,8 @@ PAGE = """<!doctype html><html><head><meta charset=utf-8>
     <button onclick="pickMarkers('mix_blue','mx_blue','mx_mk_area')">◈ blue 蓝</button>
   </div>
   <div id=mx_mk_area></div>
+  <div class=row><label>thickness 厚度 (mm)</label><input type=number id=mx_thk step=0.1 style="width:80px" placeholder="auto">
+    <span style="color:#888;font-size:12px;margin-left:8px">override pad light path; leave blank for the pad default (the endpoint check suggests a value) 覆盖标定板厚度；留空用默认（端点检查会给出建议）</span></div>
   <div class=row><button class=go id=mx_go onclick="mixfit()">Fit σ 拟合</button> <span id=mx_status></span></div>
  </fieldset>
  <fieldset><legend>③ View a calibrated mixture&nbsp;·&nbsp;查看已校准混色</legend>
@@ -596,7 +601,7 @@ async function mixfit(){const btn=document.getElementById('mx_go');btn.disabled=
  const files={};
  for(const s of ['white','red','green','blue']){const id=s==='white'?'mx_file':'mx_'+s;const el=document.getElementById(id);if(el&&el.files[0])files[s]=await f2b64(el.files[0]);}
  const markers={white:mkFor('mix_white'),red:mkFor('mix_red'),green:mkFor('mix_green'),blue:mkFor('mix_blue')};
- const res=await post('/mixfit',{a:document.getElementById('mx_a').value,b:document.getElementById('mx_b').value,files,markers});
+ const res=await post('/mixfit',{a:document.getElementById('mx_a').value,b:document.getElementById('mx_b').value,thickness:document.getElementById('mx_thk').value,files,markers});
  btn.disabled=false;document.getElementById('mx_status').textContent='';
  if(res.cmd)document.getElementById('mx_cmd').innerHTML='<div class=cmd>'+res.cmd+'</div>';
  let h='';

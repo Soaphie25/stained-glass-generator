@@ -287,7 +287,7 @@ def run_fit(opts):
                                       manual_markers=markers)
 
     pads = layout["pads"]
-    Tmm = layout["total_thickness_mm"]
+    Tmm = getattr(opts, "thickness", None) or layout["total_thickness_mm"]
     predA, predB = _baseline_tau(fA, fB, 0.0, Tmm), _baseline_tau(fA, fB, 1.0, Tmm)
 
     def _orient(Tin, chans):
@@ -378,9 +378,31 @@ def run_fit(opts):
             print("   pad%-3d pure %-9s measured #%s vs single-cal #%s  dE=%.1f"
                   % (int(pads[-1]["pct_b"]), fB.name,
                      linear_to_hex(np.clip(T[-1], 0, 1)), linear_to_hex(predB), endB))
-        print("   The ramp ends disagree with the single-filament calibrations, so"
-              " the fit anchors a bent curve around them. Re-calibrate the off"
-              " filament(s) and re-shoot on the SAME pad before trusting sigma.")
+        # Is it just the wrong THICKNESS?  If a pure end matches its single-cal far
+        # better at a different light path, the pad is thicker/thinner than recorded
+        # (that filament's cal is fine) -- suggest --thickness rather than a reshoot.
+        def _best_thk(ratio, meas):
+            best = (1e9, Tmm)
+            tt = 0.4
+            while tt <= 3.001:
+                d = delta_e(_baseline_tau(fA, fB, ratio, tt), np.clip(meas, 0, 1))
+                if d < best[0]:
+                    best = (d, round(tt, 1))
+                tt += 0.1
+            return best
+        for lbl, ratio, meas, ecur in ((fA.name, 0.0, T[0], endA),
+                                       (fB.name, 1.0, T[-1], endB)):
+            if ecur <= ENDPOINT_TOL:
+                continue
+            bd, bt = _best_thk(ratio, meas)
+            if bd < ecur - 3 and abs(bt - Tmm) > 0.15 and bd < ENDPOINT_TOL:
+                print("   -> pure %s matches its single-cal at %.1f mm (dE %.1f), not "
+                      "the recorded %.1f mm: this pad is %s -- its cal is FINE, just "
+                      "set --thickness %.1f (no reshoot)."
+                      % (lbl, bt, bd, Tmm,
+                         "thicker" if bt > Tmm else "thinner", bt))
+        print("   Remaining mismatches are a real calibration/print issue: re-calibrate"
+              " that filament (ironed pad) and re-shoot before trusting sigma.")
 
     os.makedirs(opts.out_dir, exist_ok=True)
     _draw_mix_swatches(fA.name, fB.name, rows,
@@ -417,6 +439,10 @@ def main(argv=None):
     ft.add_argument("--markers-red", help="hand-picked corners for the RED shot")
     ft.add_argument("--markers-green", help="hand-picked corners for the GREEN shot")
     ft.add_argument("--markers-blue", help="hand-picked corners for the BLUE shot")
+    ft.add_argument("--thickness", type=float, default=None,
+                    help="override the pad's total light path in mm (default from "
+                         "layout). Use when the printed pad is thicker/thinner than "
+                         "recorded -- the endpoint check will suggest a value")
     ft.add_argument("--out-dir", default=None,
                     help="override output folder (default <cal-root>/mix/<A>+<B>)")
     opts = p.parse_args(argv)
