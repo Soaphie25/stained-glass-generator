@@ -286,41 +286,56 @@ def run_fit(opts):
         return A._sample_cells_linear(layout, A._load_photo(path), 1600, 0.03,
                                       manual_markers=markers)
 
+    pads = layout["pads"]
+    Tmm = layout["total_thickness_mm"]
+    predA, predB = _baseline_tau(fA, fB, 0.0, Tmm), _baseline_tau(fA, fB, 1.0, Tmm)
+
+    def _orient(Tin, chans):
+        """Flip a ramp so pad0 ~ pure A, comparing ONLY ``chans`` to the predicted
+        pure-A/pure-B ends.  The ramp is DIRECTIONAL (pad0=A .. last=B); each screen
+        is registered independently and a colour shot may be rotated/reversed vs the
+        others (portrait/landscape) -> its pad0 lands on a DIFFERENT physical cell,
+        so orient EACH screen before splicing its channel in.  A+B mixing is
+        symmetric, so flipping only fixes the ratio->pad mapping."""
+        Tn = np.clip(np.asarray(Tin, float), 0, 1)
+        fwd = sum(abs(Tn[0, c] - predA[c]) + abs(Tn[-1, c] - predB[c]) for c in chans)
+        rev = sum(abs(Tn[0, c] - predB[c]) + abs(Tn[-1, c] - predA[c]) for c in chans)
+        return (Tn[::-1], True) if rev < fwd - 1e-9 else (Tn, False)
+
     # White measures all 3 channels; an optional colour screen re-measures ITS
-    # channel at high SNR (all the light in one channel) -- decisive when the
-    # mixture contains a PALE filament whose channels are noisy under white.
-    T = np.clip(np.asarray(_sample(opts.white, _mk(opts.markers))[0], float), 0, 1.5)
+    # channel at high SNR (all the light in one channel) -- decisive for a PALE mix.
+    flips, T = [], None
+    if opts.white:
+        T, fl = _orient(_sample(opts.white, _mk(opts.markers))[0], (0, 1, 2))
+        if fl:
+            flips.append("white")
     for scr, ch in (("red", 0), ("green", 1), ("blue", 2)):
         path = getattr(opts, scr, None)
         if not path:
             continue
         Tc, _, _, sat = _sample(path, _mk(getattr(opts, "markers_" + scr, None)))
-        if sat[ch] >= 0.99:                           # bare screen clipped -> skip
-            print("NOTE: %s screen is clipped in its channel -- kept the white "
-                  "measurement for %s." % (scr, "RGB"[ch]))
+        if sat[ch] >= 0.95:                           # near-clipped -> inflated ratio
+            print("NOTE: %s screen is over-exposed (ref %.2f, near clipping) -- its "
+                  "%s transmittance is inflated; kept white for that channel. "
+                  "Re-shoot it darker (watch the %s histogram)."
+                  % (scr, sat[ch], "RGB"[ch], "RGB"[ch]))
             continue
-        T[:, ch] = np.clip(np.asarray(Tc, float)[:, ch], 0, 1.5)
+        Tc, fl = _orient(Tc, (ch,))                   # orient by ITS OWN channel
+        if fl:
+            flips.append(scr)
+        if T is None:
+            T = Tc.copy()                             # 3-colour: seed from a colour
+        T[:, ch] = Tc[:, ch]
         print("using %s screen for the %s channel (higher SNR)"
               % (scr, "RGB"[ch]))
-    pads = layout["pads"]
-    Tmm = layout["total_thickness_mm"]
-
-    # The ramp is DIRECTIONAL (pad0 = pure A ... last pad = pure B).  Mixing A+B is
-    # symmetric, so a pad shot/loaded "backwards" (B..A), or --a/--b given swapped,
-    # has valid colours but a REVERSED ratio->pad mapping -> the fit is nonsense.
-    # We know the pure-A / pure-B colours from the single-filament cals, so match
-    # the two ENDS and flip the ramp if it's the wrong way round.
-    Tn = np.clip(np.asarray(T, float), 0, 1)
-    predA, predB = _baseline_tau(fA, fB, 0.0, Tmm), _baseline_tau(fA, fB, 1.0, Tmm)
-    fwd = delta_e(Tn[0], predA) + delta_e(Tn[-1], predB)
-    rev = delta_e(Tn[0], predB) + delta_e(Tn[-1], predA)
-    reversed_ramp = rev < fwd - 1e-6
-    if reversed_ramp:
-        Tn = Tn[::-1]
-        print("NOTE: mixture ramp looks REVERSED -- pad0 matches pure %s, not %s. "
-              "Flipped it to align with --a=%s / --b=%s (A+B mixing is symmetric)."
-              % (fB.name, fA.name, fA.name, fB.name))
-    T = Tn
+    if T is None:
+        raise SystemExit("error: no usable mixture photo -- pass --white and/or "
+                         "--red/--green/--blue")
+    if flips:
+        print("NOTE: flipped %s ramp(s) so pad0 = pure %s (screens shot at "
+              "different rotations; A+B mixing is symmetric)."
+              % (", ".join(flips), fA.name))
+    T = np.clip(np.asarray(T, float), 0, 1)
     pair = {"A": fA.name, "B": fB.name,
             "ratios": [p["pct_b"] / 100.0 for p in pads],
             "tau": [[float(x) for x in T[i]] for i in range(len(pads))]}
