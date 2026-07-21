@@ -616,6 +616,75 @@ def _load_pool(opts):
     return pool
 
 
+def suggest_palette(targets, weights, pool, sigma, pair_sigma=None, n_select=4,
+                    thickness=1.0, max_delta=20.0, max_filaments=3):
+    """Rank every ``n_select``-filament subset of ``pool`` by how well it reproduces
+    the weighted ``targets`` (area/pixel-weighted mean Delta-E to the NEAREST
+    printable recipe + out-of-gamut fraction).  Builds the full LUT once and filters
+    per subset for speed; nearest-colour dE = the subset's best possible reach."""
+    import itertools
+    names = [m.name for m in pool]
+    cands_all = sublayer_candidates(pool, sigma, pair_sigma, 0.4, max(1.2, thickness),
+                                    0.2, max_filaments)     # full pane depth range
+    tw = [(hex_to_linear(hx), float(w)) for hx, w in zip(targets, weights)]
+    W = sum(w for _, w in tw) or 1.0
+    n_select = min(n_select, len(names))
+    out = []
+    for combo in itertools.combinations(names, n_select):
+        cs = set(combo)
+        cands = [c["_lin"] for c in cands_all if all(f in cs for f in c["filaments"])]
+        if not cands:
+            continue
+        sde = oog = 0.0
+        for lin, w in tw:
+            best = min(delta_e(lin, cl) for cl in cands)
+            sde += best * w
+            if best > max_delta:
+                oog += w
+        out.append({"filaments": list(combo), "mean_de": round(sde / W, 2),
+                    "oog_frac": round(oog / W, 3)})
+    out.sort(key=lambda r: (r["mean_de"], r["oog_frac"]))
+    return out
+
+
+def image_colors(path, k=24, max_dim=320, min_lum=0.10):
+    """Quantise an image to ``k`` representative colours; return (hexes, weights).
+    Drops near-black colours (luminance < min_lum) -- in stained glass those become
+    the LEADING/came, not panes, so they shouldn't drive the palette choice."""
+    from PIL import Image
+    im = Image.open(path).convert("RGB")
+    im.thumbnail((max_dim, max_dim))
+    q = im.quantize(colors=k, method=Image.FASTOCTREE)
+    pal = q.getpalette()
+    hexes, wts = [], []
+    for cnt, idx in q.getcolors(maxcolors=1 << 20):
+        r, g, b = pal[idx * 3:idx * 3 + 3]
+        if (0.299 * r + 0.587 * g + 0.114 * b) / 255.0 < min_lum:
+            continue                                 # leading, not a pane
+        hexes.append("#%02x%02x%02x" % (r, g, b))
+        wts.append(cnt)
+    return hexes, wts
+
+
+def run_suggest(opts):
+    _discover_mixcals(opts)
+    sigma, pair = load_sigma(opts.mixcal)
+    pool = _load_pool(opts)
+    if len(pool) < opts.slots:
+        raise SystemExit("error: only %d filaments available for %d slots"
+                         % (len(pool), opts.slots))
+    hexes, wts = image_colors(opts.image, opts.quantize)
+    ranked = suggest_palette(hexes, wts, pool, sigma, pair, opts.slots,
+                             opts.thickness, opts.max_delta)
+    print("suggested %d-filament palettes for %s (%d colours):"
+          % (opts.slots, os.path.basename(opts.image), len(hexes)))
+    print("  %-42s %8s %s" % ("filaments", "mean dE", "out-of-gamut"))
+    for r in ranked[:8]:
+        print("  %-42s %8.2f %8.1f%%"
+              % ("+".join(r["filaments"]), r["mean_de"], r["oog_frac"] * 100))
+    return 0
+
+
 def parse_stack(spec):
     """'red=0.2,green=0.8' -> {'red': 0.2, 'green': 0.8} (thicknesses in mm)."""
     out = {}
@@ -936,6 +1005,26 @@ def main(argv=None):
     lt.add_argument("--match", help="comma-separated target hex codes to look up")
     lt.add_argument("--out-dir", default=CAL_ROOT)
 
+    sg = sub.add_parser("suggest",
+                        help="rank filament subsets that best cover an image")
+    sg.add_argument("--image", required=True, help="the target image (png/jpg)")
+    sg.add_argument("--slots", type=int, default=4,
+                    help="filaments per palette (AMS slots, default 4)")
+    sg.add_argument("--quantize", type=int, default=24,
+                    help="how many image colours to sample (default 24)")
+    sg.add_argument("--cal", action="append",
+                    help="filament calibration: name=path/to/calibration.json")
+    sg.add_argument("--cal-dir", help="folder of <name>/calibration.json")
+    sg.add_argument("--cal-root", default=CAL_ROOT,
+                    help="calibration root (auto-discovers cals + mix sigmas)")
+    sg.add_argument("--filaments",
+                    help="restrict the AVAILABLE pool (comma-separated names)")
+    sg.add_argument("--mixcal", action="append",
+                    help="mixture_calibration.json (per-filament sigma); repeatable")
+    sg.add_argument("--thickness", type=float, default=3.0,
+                    help="max pane depth mm sampled (default 3)")
+    sg.add_argument("--max-delta", type=float, default=20.0)
+
     st = sub.add_parser("selftest", help="synthetic recover-the-recipe check")
     st.add_argument("--out-dir", default="/tmp/recipes_selftest")
 
@@ -948,6 +1037,8 @@ def main(argv=None):
         return run_map(opts)
     if opts.cmd == "lut":
         return run_lut(opts)
+    if opts.cmd == "suggest":
+        return run_suggest(opts)
 
     pool = _load_pool(opts)
     if not pool:
