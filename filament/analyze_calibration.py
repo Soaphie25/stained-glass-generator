@@ -1189,7 +1189,12 @@ def main(argv=None):
                     help="override the output folder (default <cal-root>/<name>)")
     an.add_argument("--markers", help="bypass auto-detection with hand-picked "
                     "corners for the WHITE shot: 'x1,y1;x2,y2;x3,y3;x4,y4' in image "
-                    "pixels, order TL,TR,BR,BL")
+                    "pixels, any order (4 corners of the pad)")
+    an.add_argument("--markers-red", help="hand-picked corners for the RED shot "
+                    "(same format) -- use when a colour backlight washes out the "
+                    "black corner markers so auto-detection fails")
+    an.add_argument("--markers-green", help="hand-picked corners for the GREEN shot")
+    an.add_argument("--markers-blue", help="hand-picked corners for the BLUE shot")
     an.add_argument("--dark-frac", type=float, default=0.10,
                     help="marker darkness threshold as frac of screen brightness")
     an.add_argument("--ref-floor-frac", type=float, default=0.18)
@@ -1248,12 +1253,17 @@ def main(argv=None):
     if opts.out_dir is None:                         # natural: <cal-root>/<name>/
         opts.out_dir = os.path.join(opts.cal_root, opts.name)
     os.makedirs(opts.out_dir, exist_ok=True)
-    manual = None
-    if opts.markers:
-        pts = [tuple(float(v) for v in p.split(",")) for p in opts.markers.split(";")]
+    manual = {}
+    for screen, spec in (("white", opts.markers), ("red", opts.markers_red),
+                         ("green", opts.markers_green), ("blue", opts.markers_blue)):
+        if not spec:
+            continue
+        pts = [tuple(float(v) for v in p.split(",")) for p in spec.split(";")]
         if len(pts) != 4:
-            raise SystemExit("error: --markers needs 4 'x,y' points (TL,TR,BR,BL)")
-        manual = {"white": pts}
+            raise SystemExit("error: --markers%s needs 4 'x,y' corners"
+                             % ("" if screen == "white" else "-" + screen))
+        manual[screen] = pts
+    manual = manual or None
     cal = analyze(layout, photos, name=opts.name,
                   ref_floor_frac=opts.ref_floor_frac, dark_frac=opts.dark_frac,
                   max_dim=opts.max_dim, blur_frac=opts.blur, layer_mm=opts.layer_mm,

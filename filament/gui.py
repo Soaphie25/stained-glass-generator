@@ -119,9 +119,14 @@ def do_analyze(data):
         used.append(scr)
     if not used:
         return {"ok": False, "stderr": "pick at least a WHITE photo", "cmd": ""}
-    mk = data.get("markers")                          # hand-picked corners (orig px)
-    if mk and len(mk) == 4:
-        args += ["--markers", ";".join("%.1f,%.1f" % (p[0], p[1]) for p in mk)]
+    mk = data.get("markers") or {}                    # {screen: 4 corners (orig px)}
+    if isinstance(mk, list):                          # back-compat: bare list = white
+        mk = {"white": mk}
+    for scr in ("white", "red", "green", "blue"):
+        pts = mk.get(scr)
+        if pts and len(pts) == 4:
+            flag = "--markers" if scr == "white" else "--markers-" + scr
+            args += [flag, ";".join("%.1f,%.1f" % (p[0], p[1]) for p in pts)]
     rc, out, err = sh(args)
     res = {"ok": rc == 0, "cmd": " ".join(args), "stdout": out, "stderr": err,
            "used": used}
@@ -363,8 +368,13 @@ PAGE = """<!doctype html><html><head><meta charset=utf-8>
   <div class=row><label>green 绿</label><input type=file id=f_green accept="image/*,.dng,.arw,.cr2,.nef,.raf"></div>
   <div class=row><label>blue 蓝</label><input type=file id=f_blue accept="image/*,.dng,.arw,.cr2,.nef,.raf"></div>
   <div class=row style="color:#777;font-size:12px">White alone works for most filaments. Add the matching colour screen(s) to sharpen the hue of a <b>pale</b> or <b>intense</b> filament — each colour screen measures its channel (R/G/B) at far higher SNR, and is used automatically when it's the cleaner fit.<br>大多数耗材只需白屏。<b>淡色</b>或<b>强吸收</b>耗材可另加对应彩色背光以校正色相——彩色屏能高信噪比地测量该通道，拟合更干净时会自动采用。</div>
-  <div class=row><button onclick="pickMarkers('cal','f_white','mk_area')">◈ Pick markers manually 手动标记角点</button>
-    <span style="color:#777;font-size:12px">use if auto-detect grabs the wrong squares (e.g. a black border) · 自动识别选错方块（如黑边框）时使用</span></div>
+  <div class=row style="color:#777;font-size:12px">◈ Pick markers manually per screen — use if auto-detect grabs the wrong squares, e.g. a colour backlight washes out the black corners · 手动标记角点（逐屏）——自动识别选错方块时使用，例如彩色背光下黑角标被冲淡</div>
+  <div class=row>
+    <button onclick="pickMarkers('cal_white','f_white','mk_area')">◈ white 白</button>
+    <button onclick="pickMarkers('cal_red','f_red','mk_area')">◈ red 红</button>
+    <button onclick="pickMarkers('cal_green','f_green','mk_area')">◈ green 绿</button>
+    <button onclick="pickMarkers('cal_blue','f_blue','mk_area')">◈ blue 蓝</button>
+  </div>
   <div id=mk_area></div>
   <div class=row><button class=go id=c_go onclick="analyze()">Analyze 分析</button> <span id=c_status></span></div>
  </fieldset>
@@ -467,7 +477,8 @@ async function analyze(){
  document.getElementById('c_result').innerHTML='';document.getElementById('c_cmd').innerHTML='';
  const files={};
  for(const s of ['white','red','green','blue']){const el=document.getElementById('f_'+s);if(el.files[0])files[s]=await f2b64(el.files[0]);}
- const res=await post('/analyze',{name:document.getElementById('c_name').value,layer:document.getElementById('c_layer').value,files,markers:mkFor('cal')});
+ const markers={white:mkFor('cal_white'),red:mkFor('cal_red'),green:mkFor('cal_green'),blue:mkFor('cal_blue')};
+ const res=await post('/analyze',{name:document.getElementById('c_name').value,layer:document.getElementById('c_layer').value,files,markers});
  btn.disabled=false;document.getElementById('c_status').textContent='';
  if(res.cmd)document.getElementById('c_cmd').innerHTML='<div class=cmd>'+res.cmd+'</div>';
  renderCal(res,'c_result');
