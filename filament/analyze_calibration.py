@@ -356,6 +356,12 @@ def _locate(rgb, layout, dark_frac=0.10):
     screen, cells must be dimmer, and the orientation dot must land on a real
     dark blob.
     """
+    reg0 = layout.get("register_markers", {})
+    if reg0.get("style") == "holes" or "orientation_dot" not in reg0.get("corners", {}):
+        raise PadDetectionError(
+            "this pad has HOLE corners (no black markers), which auto-detection "
+            "can't find -- pick the 4 corner holes by hand (GUI: 'Pick markers "
+            "manually'; CLI: --markers 'x1,y1;x2,y2;x3,y3;x4,y4')")
     v = rgb.max(axis=2).astype(np.float32)
     h, w = v.shape
     p95 = float(np.percentile(v, 95))
