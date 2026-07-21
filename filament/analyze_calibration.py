@@ -534,10 +534,16 @@ def _quality_warnings(screens):
                        "too low. Max the screen brightness / raise exposure."
                        % (s, mr * 100))
         if clip > 0.12:
+            extra = ("  NB: on a COLOUR screen the light sits in ONE channel, so the "
+                     "camera's luma/brightness histogram reads FAR lower than that "
+                     "channel -- ~90%% luma on a red/green screen is already clipped. "
+                     "Expose by the R/G/B histogram of the lit colour, or drop "
+                     "exposure well below what the brightness histogram suggests."
+                     if s in ("red", "green", "blue") else "")
             out.append("[%s] OVER-EXPOSED: %.0f%% of the bare screen is clipped to "
                        "white -- the reference is saturated. Lower exposure or "
-                       "screen brightness so the windows aren't maxed out."
-                       % (s, clip * 100))
+                       "screen brightness so the windows aren't maxed out.%s"
+                       % (s, clip * 100, extra))
         for ch, f in d.get("per_channel", {}).items():
             if f.get("floored"):
                 out.append("[%s/%s] FULLY ABSORBED: this channel is black through "
@@ -625,7 +631,10 @@ def _reliability(cal):
             exp_bad.append("%s CLIPPED (%.0f%% of windows) -- shorten ITS shutter"
                            % (s, clip * 100))
     exp_req = ("each screen's bare windows must read ~85-95%% -- set the shutter "
-               "PER COLOUR (blue is dimmer, needs a longer one); ISO 100, RAW. ")
+               "PER COLOUR (blue is dimmer, needs a longer one); ISO 100, RAW. "
+               "On a COLOUR screen judge exposure by the LIT channel's R/G/B "
+               "histogram, NOT luma/brightness -- luma reads far lower, so ~90%% "
+               "luma on a red/green screen is already clipped. ")
     exp_req += ("Issues: " + "; ".join(exp_bad) if exp_bad
                 else "all provided shots exposed OK.")
 
@@ -797,9 +806,13 @@ def analyze(layout, photos, name="filament", ref_floor_frac=0.18, dark_frac=0.10
     prim_src = {}
     diag_of = {"R": "red", "G": "green", "B": "blue"}
     for cname in CHANNELS:
+        dscreen = screens.get(diag_of[cname], {})
         wfit = screens.get("white", {}).get("per_channel", {}).get(cname)
-        dfit = screens.get(diag_of[cname], {}).get("per_channel", {}).get(cname)
-        use_diag = (dfit and not dfit.get("floored") and
+        dfit = dscreen.get("per_channel", {}).get(cname)
+        # a clipped colour reference is saturated -> its transmittance (cell/ref)
+        # is bogus, so don't prefer it even if the raw fit looks clean; use white.
+        dclip = dscreen.get("clip_frac", 0.0) > 0.12
+        use_diag = (dfit and not dfit.get("floored") and not dclip and
                     dfit.get("r2", 0.0) > (wfit.get("r2", -1.0) if wfit else -1.0))
         src = dfit if use_diag else (wfit or dfit)
         if src:
