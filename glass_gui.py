@@ -108,6 +108,8 @@ def do_gamut(data):
             "--out-dir", WORK]
     if sel:
         args += ["--filaments", ",".join(sel)]
+    if data.get("no_sigma"):
+        args += ["--no-sigma"]
     rc, out, err = sh(args)
     return {"ok": rc == 0, "gamut": "%s/gamut.png" % WORK if rc == 0 else None,
             "stderr": err, "selected": sel}
@@ -123,7 +125,8 @@ def _map(data):
                                         else None),
                             max_size_mm=(float(data["size"]) if data.get("size")
                                          else None),
-                            filaments=(data.get("filaments") or None))
+                            filaments=(data.get("filaments") or None),
+                            no_sigma=bool(data.get("no_sigma")))
 
 
 def _table(m):
@@ -163,7 +166,8 @@ def do_gen3mf(data):
                  max_delta=float(data.get("max_delta") or 20),
                  num_colors=(int(data["colors"]) if data.get("colors") else None),
                  max_size_mm=(float(data["size"]) if data.get("size") else None),
-                 filaments=(data.get("filaments") or None))
+                 filaments=(data.get("filaments") or None),
+                 no_sigma=bool(data.get("no_sigma")))
     return {"ok": True, "download": out, "image": os.path.join(WORK, "panel_preview.png"),
             "table": _table(m), "dims": [round(m["W"]), round(m["H"])]}
 
@@ -228,6 +232,7 @@ PAGE = r"""<!doctype html><html><head><meta charset=utf-8>
 
 <fieldset><legend>① Filaments &amp; gamut&nbsp;·&nbsp;耗材与色域</legend>
  <div id=lut>checking… 检查中…</div>
+ <div class=row style="font-size:13px;margin-top:4px"><label><input type=checkbox id=o_nosigma onchange="genGamut()"> Direct approximation · 直接近似 — skip mixture calibration; predict mixes from the single filaments only (slightly off, but no mixture ramps needed) 跳过混色校准，仅用单色预测混合（略有偏差，但无需打印渐变板）</label></div>
  <div id=gamut style="margin-top:8px"></div>
  <div id=sug_result style="margin-top:6px"></div>
 </fieldset>
@@ -287,7 +292,7 @@ function svgOpts(){const m=$('o_leadmode').value;
  return o;}
 function svgFlags(){return {'smooth-curves':$('o_smooth').checked,'merge-leading':$('o_mergelead').checked};}
 let ALLFIL=[], SEL=[], SLOTS=4;
-function params(){return {depth:$('o_depth').value,size:$('o_size').value,colors:$('o_colors').value,max_delta:$('o_maxdelta').value,filaments:SEL};}
+function params(){return {depth:$('o_depth').value,size:$('o_size').value,colors:$('o_colors').value,max_delta:$('o_maxdelta').value,filaments:SEL,no_sigma:$('o_nosigma').checked};}
 async function lut(){const r=await post('/lutstatus',{});
  if(!r.ready){$('lut').innerHTML='<div class=warn><b>No calibrated filaments yet · 尚无已校准耗材</b><br>Calibrate filaments first: run <code>python3 filament/gui.py</code> · 请先用耗材 GUI 校准：运行 <code>python3 filament/gui.py</code></div>';return;}
  ALLFIL=r.filaments; if(SEL.length===0)SEL=ALLFIL.slice(0,Math.min(SLOTS,ALLFIL.length));
@@ -313,8 +318,8 @@ function applyPal(csv){SEL=csv.split(',').slice(0,SLOTS);renderFil();genGamut();
 function togg(f){const i=SEL.indexOf(f);if(i>=0)SEL.splice(i,1);else if(SEL.length<SLOTS)SEL.push(f);renderFil();genGamut();}
 function addAms(){SLOTS=Math.min(8,SLOTS+4);renderFil();}
 async function genGamut(){$('gamut').innerHTML='<span style="color:#777">building gamut… 生成色域…</span>';
- const r=await post('/gamut',{filaments:SEL});
- $('gamut').innerHTML=r.gamut?('<div style="color:#555;font-size:12px">reachable gamut with ['+SEL.join(', ')+'] · 可达色域</div>'+img(r.gamut)):('<div class=warn>'+(r.stderr||'')+'</div>');}
+ const r=await post('/gamut',{filaments:SEL,no_sigma:$('o_nosigma').checked});
+ $('gamut').innerHTML=r.gamut?('<div style="color:#555;font-size:12px">reachable gamut with ['+SEL.join(', ')+']'+($('o_nosigma').checked?' · direct approx (σ=0) 直接近似':'')+' · 可达色域</div>'+img(r.gamut)):('<div class=warn>'+(r.stderr||'')+'</div>');}
 async function convert(){const el=$('img');if(!el.files[0]){alert('pick an image 请选择图片');return;}
  $('c_status').textContent='vectorising… 矢量化中…';
  const image=await f2b64(el.files[0]);

@@ -309,7 +309,7 @@ def extrude(rings, z0, z1, flip_h=None):
 # --------------------------------------------------------------------------- #
 # Colour mapping (LUT) + Bambu colour-mix 3MF assembly
 # --------------------------------------------------------------------------- #
-def _lut(cal_root, thickness, max_filaments, filaments=None):
+def _lut(cal_root, thickness, max_filaments, filaments=None, no_sigma=False):
     import solve_recipe as SR
 
     class O:
@@ -318,12 +318,13 @@ def _lut(cal_root, thickness, max_filaments, filaments=None):
     o.cal = o.cal_dir = o.mixcal = None
     o.cal_root = cal_root
     o.filaments = filaments                           # restrict to a chosen subset
-    SR._discover_mixcals(o)
+    if not no_sigma:                                  # else: DIRECT APPROX (baseline)
+        SR._discover_mixcals(o)
     pool = SR._load_pool(o)
     if not pool:
         raise SystemExit("no calibrations under %s (calibrate some filaments first)"
                          % cal_root)
-    sigma, pair_sigma = SR.load_sigma(o.mixcal)
+    sigma, pair_sigma = SR.load_sigma(o.mixcal)       # {} when no_sigma -> scatter off
     cands = SR.sublayer_candidates(pool, sigma, pair_sigma, thickness, thickness,
                                    thickness, max_filaments)
     return SR, pool, sigma, pair_sigma, cands
@@ -363,9 +364,12 @@ def _cluster_colors(colw, k, SR):
 
 
 def map_recipes(frag_dir, cal_root, thickness=1.6, max_delta=20.0,
-                num_colors=None, max_size_mm=None, filaments=None):
-    """Read fragments and map each pane colour to the nearest printable recipe."""
-    SR, pool, sigma, pair_sigma, cands3 = _lut(cal_root, thickness, 3, filaments)
+                num_colors=None, max_size_mm=None, filaments=None, no_sigma=False):
+    """Read fragments and map each pane colour to the nearest printable recipe.
+    ``no_sigma`` = DIRECT APPROXIMATION: predict mixes from the single cals alone
+    (scatter off), so no mixture calibration is needed -- slightly off but workable."""
+    SR, pool, sigma, pair_sigma, cands3 = _lut(cal_root, thickness, 3, filaments,
+                                               no_sigma=no_sigma)
     frags = sorted(glob.glob(os.path.join(frag_dir, "color_*.svg")))
     if not frags:
         raise SystemExit("no color_*.svg fragments in %s" % frag_dir)
@@ -464,10 +468,11 @@ def _print_table(m):
 
 
 def build_3mf(frag_dir, cal_root, out_path, thickness=1.6, max_delta=20.0,
-              num_colors=None, bed_mm=256.0, max_size_mm=None, filaments=None):
+              num_colors=None, bed_mm=256.0, max_size_mm=None, filaments=None,
+              no_sigma=False):
     from bambu_mix3mf import write_bambu_color_mix_3mf, default_template
     m = map_recipes(frag_dir, cal_root, thickness, max_delta, num_colors,
-                    max_size_mm, filaments)
+                    max_size_mm, filaments, no_sigma=no_sigma)
     SR, pool, items = m["SR"], m["pool"], m["items"]
     names, H, scale = m["names"], m["H"], m["scale"]
     rec_cache, targets = m["rec_cache"], m["targets"]
@@ -562,13 +567,17 @@ def main(argv=None):
     p.add_argument("--filaments",
                    help="restrict to these filament names (comma-separated); the "
                         "gamut is built from just these (e.g. your loaded AMS slots)")
+    p.add_argument("--no-sigma", action="store_true",
+                   help="DIRECT APPROXIMATION: predict mixes from the single cals "
+                        "only (scatter off) -- no mixture calibration needed, "
+                        "slightly off but the pipeline still works")
     p.add_argument("--selftest", action="store_true", help="geometry self-test")
     opts = p.parse_args(argv)
     if opts.selftest or not opts.frag_dir:
         return _selftest()
     return build_3mf(opts.frag_dir, opts.cal_root, opts.out, opts.thickness,
                      opts.max_delta, opts.num_colors, max_size_mm=opts.max_size_mm,
-                     filaments=opts.filaments)
+                     filaments=opts.filaments, no_sigma=opts.no_sigma)
 
 
 if __name__ == "__main__":

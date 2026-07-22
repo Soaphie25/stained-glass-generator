@@ -856,7 +856,8 @@ def _draw_gamut(cands, path):
 def run_lut(opts):
     """Build the full colour LUT: every printable recipe -> its predicted colour,
     written to color_lut.json (+ a gamut image).  With --match, look up targets."""
-    _discover_mixcals(opts)
+    if not getattr(opts, "no_sigma", False):
+        _discover_mixcals(opts)
     pool = _load_pool(opts)
     if not pool:
         raise SystemExit("error: no calibrations (use --cal-root/--cal-dir/--cal)")
@@ -1021,6 +1022,8 @@ def main(argv=None):
     lt.add_argument("--layer", type=float, default=0.2)
     lt.add_argument("--tol-de", type=float, default=1.5)
     lt.add_argument("--match", help="comma-separated target hex codes to look up")
+    lt.add_argument("--no-sigma", action="store_true",
+                    help="direct approximation: ignore mixture cals, scatter off")
     lt.add_argument("--out-dir", default=CAL_ROOT)
 
     sg = sub.add_parser("suggest",
