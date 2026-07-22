@@ -381,15 +381,6 @@ def sublayer_candidates(pool, sigma, pair_sigma=None, tmin=0.4, tmax=3.0,
         return float(np.max(m.a)) < 0.45             # low absorption/chroma
     has_pale = any(m.max_frac >= 1.0 - 1e-9 and _pale(m) for m in pool)
 
-    def _dilute_ok(members):
-        # SPECTRUM-SIDE constraint: an INTENSE filament may only be mixed with PALE
-        # filaments (transparent / light-blue / yellow ...), never a SATURATED one --
-        # blue+red clashes to purple, blue+green to a muddy teal.  Keys off each
-        # filament's own absorption, so it holds for ANY colour set.
-        if not any(m.max_frac < 1.0 - 1e-9 for m in members):
-            return True                              # no intense filament -> anything
-        return all(_pale(m) for m in members if m.max_frac >= 1.0 - 1e-9)
-
     def emit(lin, rec):
         rec["_lin"] = lin
         rec["predicted_hex"] = linear_to_hex(lin)
@@ -407,8 +398,6 @@ def sublayer_candidates(pool, sigma, pair_sigma=None, tmin=0.4, tmax=3.0,
     if max_filaments >= 2:
         for a, b in itertools.combinations(range(len(pool)), 2):
             A, B = pool[a], pool[b]
-            if not _dilute_ok([A, B]):               # intense only with pales
-                continue
             sA, sB, src = _pair_sigmas(A, B, sigma, pair_sigma)
             have = (src == "direct") or (A.name in sigma and B.name in sigma)
             for p in ratios:                             # p = fraction of B
@@ -427,8 +416,6 @@ def sublayer_candidates(pool, sigma, pair_sigma=None, tmin=0.4, tmax=3.0,
         r3 = np.round(np.arange(0.2, 0.81, 0.2), 3)
         for a, b, c in itertools.combinations(range(len(pool)), 3):
             mods = [pool[a], pool[b], pool[c]]
-            if not _dilute_ok(mods):                 # intense only with pales
-                continue
             sgs = [sigma.get(m.name, np.zeros(3)) for m in mods]
             have = all(m.name in sigma for m in mods)
             for fa in r3:
@@ -466,6 +453,20 @@ def solve_target_sublayer(target_hex, pool, sigma, pair_sigma=None, ratio_step=0
     # the HUE and tolerates a brightness error -- avoids picking a red+blue mix for a
     # blue/green target just because its lightness happened to match (out of gamut).
     W_L = 0.35
+    # DODGE guard: an intense filament diluted with a SATURATED (normal) co-filament
+    # is only OK when the result's hue actually MATCHES the target -- that's a real
+    # mixed colour (dark green = green+blue for a green target; purple = blue+red for a
+    # purple target).  If the hue is FAR from the target it's a clashing dodge (red to
+    # lighten a blue -> purple) -> exclude it; pale diluents remain.  Spectrum-side.
+    HUE_GATE = 40.0
+    tgt_hue = float(np.degrees(np.arctan2(tlab[2], tlab[1])))
+    intense = {m.name for m in pool if m.max_frac < 1.0 - 1e-9}
+    pale = {m.name for m in pool if float(np.max(m.a)) < 0.45}
+
+    def _huegap(h):
+        dd = abs(h - tgt_hue) % 360.0
+        return min(dd, 360.0 - dd)
+
     scored = []
     for c in cands:
         d = {k: v for k, v in c.items() if k != "_lin"}
@@ -473,25 +474,31 @@ def solve_target_sublayer(target_hex, pool, sigma, pair_sigma=None, ratio_step=0
         d["delta_e"] = round(float(np.linalg.norm(tlab - lab)), 3)
         d["_sel"] = float(W_L * (tlab[0] - lab[0]) ** 2
                           + (tlab[1] - lab[1]) ** 2 + (tlab[2] - lab[2]) ** 2)
+        fils = c["filaments"]
+        intsat = (any(f in intense for f in fils)
+                  and any(f not in intense and f not in pale for f in fils))
+        h = float(np.degrees(np.arctan2(lab[2], lab[1])))
+        d["_excluded"] = bool(intsat and _huegap(h) > HUE_GATE)
         scored.append(d)
     if not scored:
         return {"target_hex": target_hex.lower(), "delta_e": None}
     scored.sort(key=lambda c: c["delta_e"])
+    usable = [c for c in scored if not c["_excluded"]] or scored
     if max_delta is not None:
         # tiered: FEWEST filaments that can reach within max_delta; among those
         # acceptable-quality recipes pick the most HUE-accurate (min _sel).  Out of
         # gamut (none within max_delta) -> the most hue-accurate recipe overall.
         chosen = None
-        for n in sorted({c["n"] for c in scored}):
-            within = [c for c in scored if c["n"] == n and c["delta_e"] <= max_delta]
+        for n in sorted({c["n"] for c in usable}):
+            within = [c for c in usable if c["n"] == n and c["delta_e"] <= max_delta]
             if within:
                 chosen = min(within, key=lambda c: c["_sel"])
                 break
         if chosen is None:
-            chosen = min(scored, key=lambda c: c["_sel"])
+            chosen = min(usable, key=lambda c: c["_sel"])
     else:
-        best_de = scored[0]["delta_e"]
-        near = [c for c in scored if c["delta_e"] <= best_de + tol_de]
+        best_de = usable[0]["delta_e"] if usable else scored[0]["delta_e"]
+        near = [c for c in usable if c["delta_e"] <= best_de + tol_de]
         chosen = min(near, key=lambda c: (c["n"], c["_sel"]))  # simpler, then hue
     single = min((c for c in scored if c["n"] == 1),
                  key=lambda c: c["delta_e"], default=None)
