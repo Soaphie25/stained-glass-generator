@@ -1515,29 +1515,67 @@ def fragments_to_colored_paths(frag_rgb, labels, smoothed_arcs, clip_poly, px_mm
         return []
     faces = list(polygonize(unary_union(lines)))
     h, w = labels.shape
-    items = []
+    # A thin SLIVER face's representative point can land on a labels==0 pixel (a
+    # seam/leading pixel); precompute the nearest nonzero-label pixel so the face
+    # is coloured by its adjacent pane instead of dropping out.
+    zero = labels == 0
+    near = (ndimage.distance_transform_edt(zero, return_distances=False,
+                                           return_indices=True)
+            if zero.any() else None)
+
+    def _color_at(pt):
+        c, r = int(round(pt.x)), int(round(pt.y))
+        if not (0 <= r < h and 0 <= c < w):
+            return None
+        if int(labels[r, c]) == 0 and near is not None:
+            r, c = int(near[0][r, c]), int(near[1][r, c])   # nearest glass pixel
+        fid = int(labels[r, c])
+        if fid == 0:
+            return None
+        col = frag_rgb[r, c]
+        return "#%02x%02x%02x" % (int(col[0]), int(col[1]), int(col[2]))
+
+    emitted = []                                 # (geom, hex) glass panes
     for face in faces:
         if face.is_empty or face.area < 0.5:
             continue
-        pt = face.representative_point()
-        c, r = int(round(pt.x)), int(round(pt.y))
-        if not (0 <= r < h and 0 <= c < w):
+        hexc = _color_at(face.representative_point())
+        if hexc is None:
             continue
-        fid = int(labels[r, c])
-        if fid == 0:
-            continue
-        col = frag_rgb[r, c]
-        hexc = "#%02x%02x%02x" % (int(col[0]), int(col[1]), int(col[2]))
         clipped = face if clip_poly is None else face.intersection(clip_poly)
         if not clipped.is_valid:
-            clipped = clipped.buffer(0)  # repair any self-touch from clipping
+            clipped = clipped.buffer(0)          # repair any self-touch from clip
         for pg in _flatten_polys([clipped]):
             if not pg.is_valid:
                 pg = pg.buffer(0)
             for g in _flatten_polys([pg]):
-                d = _polygon_polyline_d(g, px_mm)
-                if d:
-                    items.append((g.area, d, hexc))
+                if g.area >= 0.5:
+                    emitted.append((g, hexc))
+
+    # Close HOLES: arcs that don't quite close into a face near junctions/borders
+    # leave thin silhouette regions no face enclosed (the "hole in the zigzag
+    # around the grass").  Fill each leftover piece with the nearest pane's colour
+    # so the panes tile the silhouette EXACTLY -- no holes, no overlaps.
+    if clip_poly is not None and emitted:
+        leftover = clip_poly.difference(unary_union([g for g, _ in emitted]))
+        for piece in _flatten_polys([leftover]):
+            if piece.is_empty or piece.area < 0.5:
+                continue
+            if not piece.is_valid:
+                piece = piece.buffer(0)
+            for g in _flatten_polys([piece]):
+                if g.area < 0.5:
+                    continue
+                hexc = _color_at(g.representative_point())
+                if hexc is None:                 # fall back to nearest pane
+                    hexc = min(emitted, key=lambda gc: g.distance(gc[0]))[1]
+                emitted.append((g, hexc))
+
+    items = []
+    for g, hexc in emitted:
+        d = _polygon_polyline_d(g, px_mm)
+        if d:
+            items.append((g.area, d, hexc))
     items.sort(key=lambda t: -t[0])
     return [(d, c) for (_, d, c) in items]
 

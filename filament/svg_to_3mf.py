@@ -154,10 +154,22 @@ def _orient(ring, ccw):
 
 
 def _contains(B, A):
-    """Ring B contains ring A (majority of A's vertices inside B -- robust to a
-    stray boundary-touching vertex; panes never straddle each other)."""
-    inside = sum(1 for p in A if _pt_in_ring(B, p))
-    return inside > len(A) // 2
+    """True iff ring B strictly ENCLOSES ring A (A is a hole/island of B), not
+    merely ABUTS it.  A guaranteed-interior point of A is tested against B: for a
+    real hole that point is inside B; for two panes that only share a border it is
+    outside.  A vertex majority-vote miscounts shared-edge vertices (which sit ON
+    B's boundary) as 'inside' and wrongly nests an adjacent pane as a hole -- which
+    then drops out of the mesh and leaves a HOLE in the panel."""
+    try:
+        from shapely.geometry import Polygon as _Poly
+        p = _Poly(A)
+        if not p.is_valid:
+            p = p.buffer(0)
+        rp = p.representative_point()
+        return bool(_pt_in_ring(B, (rp.x, rp.y)))
+    except Exception:
+        inside = sum(1 for p in A if _pt_in_ring(B, p))
+        return inside > len(A) // 2
 
 
 def nest_polygons(rings):
