@@ -440,7 +440,7 @@ def sublayer_candidates(pool, sigma, pair_sigma=None, tmin=0.4, tmax=3.0,
 
 def solve_target_sublayer(target_hex, pool, sigma, pair_sigma=None, ratio_step=0.05,
                           tmin=0.4, tmax=3.0, layer=0.2, max_filaments=2,
-                          tol_de=1.5, cands=None, max_delta=None):
+                          tol_de=1.5, cands=None, max_delta=None, max_delta_2=None):
     """Best sub-layer recipe for one target.  Pass a precomputed ``cands`` (from
     sublayer_candidates) to reuse the LUT across many targets."""
     target_lin = hex_to_linear(target_hex)
@@ -485,12 +485,16 @@ def solve_target_sublayer(target_hex, pool, sigma, pair_sigma=None, ratio_step=0
     scored.sort(key=lambda c: c["delta_e"])
     usable = [c for c in scored if not c["_excluded"]] or scored
     if max_delta is not None:
-        # tiered: FEWEST filaments that can reach within max_delta; among those
-        # acceptable-quality recipes pick the most HUE-accurate (min _sel).  Out of
-        # gamut (none within max_delta) -> the most hue-accurate recipe overall.
+        # tiered: use the FEWEST filaments that reach within their tier's threshold --
+        # a single if it's within the 2-colour threshold (else allow a 2-mix), a 2-mix
+        # within the 3-colour threshold (else allow a 3-mix).  Among the acceptable
+        # recipes at that tier pick the most HUE-accurate (min _sel).  Out of gamut
+        # (nothing qualifies) -> the most hue-accurate recipe overall.
+        md2 = max_delta if max_delta_2 is None else max_delta_2
         chosen = None
         for n in sorted({c["n"] for c in usable}):
-            within = [c for c in usable if c["n"] == n and c["delta_e"] <= max_delta]
+            t = md2 if n == 1 else max_delta
+            within = [c for c in usable if c["n"] == n and c["delta_e"] <= t]
             if within:
                 chosen = min(within, key=lambda c: c["_sel"])
                 break

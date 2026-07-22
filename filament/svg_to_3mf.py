@@ -364,8 +364,11 @@ def _cluster_colors(colw, k, SR):
 
 
 def map_recipes(frag_dir, cal_root, thickness=1.6, max_delta=20.0,
-                num_colors=None, max_size_mm=None, filaments=None, no_sigma=False):
+                num_colors=None, max_size_mm=None, filaments=None, no_sigma=False,
+                max_delta_2=None):
     """Read fragments and map each pane colour to the nearest printable recipe.
+    ``max_delta_2`` = 2-colour threshold (allow a 2-mix when a single exceeds it);
+    ``max_delta`` = 3-colour threshold (allow a 3-mix when a 2-mix exceeds it).
     ``no_sigma`` = DIRECT APPROXIMATION: predict mixes from the single cals alone
     (scatter off), so no mixture calibration is needed -- slightly off but workable."""
     SR, pool, sigma, pair_sigma, cands3 = _lut(cal_root, thickness, 3, filaments,
@@ -391,10 +394,11 @@ def map_recipes(frag_dir, cal_root, thickness=1.6, max_delta=20.0,
                                   num_colors, SR)
 
     def recipe(hexc):
-        # tiered by filament count, gated by max_delta: use the fewest filaments
-        # already within max_delta (a good-enough single beats any mix), else best.
-        return SR.solve_target_sublayer(hexc, pool, sigma, pair_sigma,
-                                        cands=cands3, max_delta=max_delta)["recommended"]
+        # tiered by filament count: single within the 2-colour threshold (max_delta_2),
+        # else 2-mix within the 3-colour threshold (max_delta), else 3-mix, else best.
+        return SR.solve_target_sublayer(hexc, pool, sigma, pair_sigma, cands=cands3,
+                                        max_delta=max_delta,
+                                        max_delta_2=max_delta_2)["recommended"]
     rec_cache = {t: recipe(t) for t in set(targets.values())}
     return {"SR": SR, "pool": pool, "items": items, "rec_cache": rec_cache,
             "targets": targets, "W": W, "H": H, "scale": scale,
@@ -469,10 +473,10 @@ def _print_table(m):
 
 def build_3mf(frag_dir, cal_root, out_path, thickness=1.6, max_delta=20.0,
               num_colors=None, bed_mm=256.0, max_size_mm=None, filaments=None,
-              no_sigma=False):
+              no_sigma=False, max_delta_2=None):
     from bambu_mix3mf import write_bambu_color_mix_3mf, default_template
     m = map_recipes(frag_dir, cal_root, thickness, max_delta, num_colors,
-                    max_size_mm, filaments, no_sigma=no_sigma)
+                    max_size_mm, filaments, no_sigma=no_sigma, max_delta_2=max_delta_2)
     SR, pool, items = m["SR"], m["pool"], m["items"]
     names, H, scale = m["names"], m["H"], m["scale"]
     rec_cache, targets = m["rec_cache"], m["targets"]
@@ -560,6 +564,9 @@ def main(argv=None):
                    help="panel thickness mm (flat; colour via sub-layer mix)")
     p.add_argument("--max-delta", type=float, default=20.0,
                    help="allow a 3-filament mix only if 2-mix exceeds this dE")
+    p.add_argument("--max-delta-2", type=float, default=None,
+                   help="allow a 2-filament mix only if the single exceeds this dE "
+                        "(2-colour threshold; default = --max-delta)")
     p.add_argument("--num-colors", type=int,
                    help="reduce the palette to this many recipes (default: all)")
     p.add_argument("--max-size-mm", type=float,
@@ -577,7 +584,8 @@ def main(argv=None):
         return _selftest()
     return build_3mf(opts.frag_dir, opts.cal_root, opts.out, opts.thickness,
                      opts.max_delta, opts.num_colors, max_size_mm=opts.max_size_mm,
-                     filaments=opts.filaments, no_sigma=opts.no_sigma)
+                     filaments=opts.filaments, no_sigma=opts.no_sigma,
+                     max_delta_2=opts.max_delta_2)
 
 
 if __name__ == "__main__":

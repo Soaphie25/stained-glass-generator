@@ -145,7 +145,9 @@ def _map(data):
                             max_size_mm=(float(data["size"]) if data.get("size")
                                          else None),
                             filaments=(data.get("filaments") or None),
-                            no_sigma=bool(data.get("no_sigma")))
+                            no_sigma=bool(data.get("no_sigma")),
+                            max_delta_2=(float(data["max_delta_2"])
+                                         if data.get("max_delta_2") else None))
 
 
 def _table(m):
@@ -186,7 +188,9 @@ def do_gen3mf(data):
                  num_colors=(int(data["colors"]) if data.get("colors") else None),
                  max_size_mm=(float(data["size"]) if data.get("size") else None),
                  filaments=(data.get("filaments") or None),
-                 no_sigma=bool(data.get("no_sigma")))
+                 no_sigma=bool(data.get("no_sigma")),
+                 max_delta_2=(float(data["max_delta_2"])
+                              if data.get("max_delta_2") else None))
     return {"ok": True, "download": out, "image": os.path.join(WORK, "panel_preview.png"),
             "table": _table(m), "dims": [round(m["W"]), round(m["H"])]}
 
@@ -282,8 +286,10 @@ PAGE = r"""<!doctype html><html><head><meta charset=utf-8>
 
 <fieldset><legend>③ Gamut preview&nbsp;·&nbsp;色域预览 <span style="font-weight:400;color:#777;font-size:12px">— printable colours 实际可打印颜色</span></legend>
  <div class=row>depth 厚度 <input type=number id=o_depth value=1.6 step=0.2 style="width:60px" onchange="if(CONVERTED)preview()"> mm
-   &nbsp; max-ΔE (allow 3-mix) 三色阈值 <input type=number id=o_maxdelta value=20 style="width:60px" onchange="if(CONVERTED)preview()">
+   &nbsp; max-ΔE 2-mix 双色阈值 <input type=number id=o_maxdelta2 placeholder="=3色" style="width:56px" onchange="if(CONVERTED)preview()">
+   &nbsp; 3-mix 三色阈值 <input type=number id=o_maxdelta value=20 style="width:56px" onchange="if(CONVERTED)preview()">
    &nbsp; <button class=go onclick="preview()">Update preview 更新预览</button> <span id=p_status></span></div>
+ <div class=row style="color:#888;font-size:12px">single if within 2-mix thresh, else 2-mix if within 3-mix thresh, else 3-mix · 单色达到双色阈值内则用单色，否则用双色（达三色阈值内），再否则三色</div>
  <div class=grid><div id=p_img></div><div id=p_table></div></div>
 </fieldset>
 
@@ -311,7 +317,7 @@ function svgOpts(){const m=$('o_leadmode').value;
  return o;}
 function svgFlags(){return {'smooth-curves':$('o_smooth').checked,'merge-leading':$('o_mergelead').checked};}
 let ALLFIL=[], SEL=[], SLOTS=4, CONVERTED=false;
-function params(){return {depth:$('o_depth').value,size:$('o_size').value,colors:$('o_colors').value,max_delta:$('o_maxdelta').value,filaments:SEL,no_sigma:$('o_nosigma').checked};}
+function params(){return {depth:$('o_depth').value,size:$('o_size').value,colors:$('o_colors').value,max_delta:$('o_maxdelta').value,max_delta_2:$('o_maxdelta2').value,filaments:SEL,no_sigma:$('o_nosigma').checked};}
 async function lut(){const r=await post('/lutstatus',{});
  if(!r.ready){$('lut').innerHTML='<div class=warn><b>No calibrated filaments yet · 尚无已校准耗材</b><br>Calibrate filaments first: run <code>python3 filament/gui.py</code> · 请先用耗材 GUI 校准：运行 <code>python3 filament/gui.py</code></div>';return;}
  ALLFIL=r.filaments; if(SEL.length===0)SEL=ALLFIL.slice(0,Math.min(SLOTS,ALLFIL.length));
