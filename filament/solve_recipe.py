@@ -132,9 +132,26 @@ def _hue_rotate(a, deg):
             + k * np.dot(k, a) * (1 - np.cos(th)))
 
 
-def load_filament(name, cal_path, hue_override=None):
-    """Build a Filament from an analyze_calibration.py calibration.json.  A stored
-    ``hue_shift_deg`` (or ``hue_override``, for live preview) rotates the hue."""
+def _adjust_absorption(a, hue_deg=0.0, sat_pct=0.0, bright_pct=0.0):
+    """Manual eye-match nudges to the absorption vector, split into hue / saturation /
+    brightness on the grey axis (1,1,1):
+      * hue        -- rotate the chroma around the grey axis (which channel absorbs);
+      * saturation -- scale the chroma (deviation from grey);
+      * brightness -- scale the MEAN absorption (less absorption = brighter).
+    Keeps a >= 0."""
+    a = _hue_rotate(a, hue_deg)                       # returns an array
+    m = float(a.mean())
+    ch = a - m
+    ch = ch * (1.0 + sat_pct / 100.0)
+    m = max(m * (1.0 - bright_pct / 100.0), 0.0)      # +bright% -> less absorb -> lighter
+    return np.clip(m + ch, 0.0, None)
+
+
+def load_filament(name, cal_path, hue_override=None, sat_override=None,
+                  bright_override=None):
+    """Build a Filament from an analyze_calibration.py calibration.json.  Stored
+    hue_shift_deg / sat_pct / bright_pct (or the *_override args, for live preview)
+    apply the manual eye-match nudge to the absorption."""
     with open(cal_path) as f:
         cal = json.load(f)
     prim = cal.get("primary_absorption_per_mm", {})
@@ -170,7 +187,9 @@ def load_filament(name, cal_path, hue_override=None):
             t0 = T0_DEFAULT
         T0.append(t0)
     hue = cal.get("hue_shift_deg", 0) if hue_override is None else hue_override
-    a = _hue_rotate(a, hue).tolist()                           # manual eye-match nudge
+    sat = cal.get("sat_pct", 0) if sat_override is None else sat_override
+    bright = cal.get("bright_pct", 0) if bright_override is None else bright_override
+    a = _adjust_absorption(np.asarray(a, float), hue, sat, bright).tolist()
     max_frac = cal.get("reliability", {}).get("recommended_max_mix_fraction", 1.0)
     return Filament(name, a, T0, max_frac=max_frac)
 

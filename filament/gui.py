@@ -190,6 +190,8 @@ def _cal_payload(name):
     return {"name": name, "primary": cal.get("primary_absorption_per_mm"),
             "depth_colors": depth_colors,
             "hue_shift": cal.get("hue_shift_deg", 0),
+            "sat_shift": cal.get("sat_pct", 0),
+            "bright_shift": cal.get("bright_pct", 0),
             "reliability": cal.get("reliability"),
             "warnings": cal.get("warnings", []),
             "screens": {s: {"max_ref": d.get("max_ref"),
@@ -208,23 +210,28 @@ def _cal_json_path(name):
     return None
 
 
-def _depth_hexes(name, hue=None):
+def _num(data, k):
+    try:
+        return float(data.get(k) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _depth_hexes(name, hue=None, sat=None, bright=None):
     from solve_recipe import load_filament, linear_to_hex, predict_linear
     p = _cal_json_path(name)
     if not p:
         return []
-    f = load_filament(name, p, hue_override=hue)
+    f = load_filament(name, p, hue_override=hue, sat_override=sat,
+                      bright_override=bright)
     return [[t, "#" + linear_to_hex(predict_linear([f], [t]))]
             for t in (0.4, 0.8, 1.2, 1.6, 2.0, 2.5, 3.0)]
 
 
-def do_huepreview(data):
+def do_huepreview(data):                              # hue / saturation / brightness
     name = (data.get("name") or "").strip()
-    try:
-        hue = float(data.get("hue") or 0)
-    except ValueError:
-        hue = 0.0
-    return {"ok": True, "depth_colors": _depth_hexes(name, hue), "hue": hue}
+    dc = _depth_hexes(name, _num(data, "hue"), _num(data, "sat"), _num(data, "bright"))
+    return {"ok": True, "depth_colors": dc}
 
 
 def do_savehue(data):
@@ -234,9 +241,11 @@ def do_savehue(data):
     if not os.path.isfile(p):
         return {"ok": False, "stderr": "no calibration.json for '%s'" % name}
     c = json.load(open(p))
-    c["hue_shift_deg"] = float(data.get("hue") or 0)
+    c["hue_shift_deg"] = _num(data, "hue")
+    c["sat_pct"] = _num(data, "sat")
+    c["bright_pct"] = _num(data, "bright")
     json.dump(c, open(p, "w"), indent=2)
-    return {"ok": True, "hue": c["hue_shift_deg"]}
+    return {"ok": True}
 
 
 def _grad(a, b, thk, sig):
@@ -659,8 +668,11 @@ async function loadCal(){const n=document.getElementById('cv_name').value;if(!n)
  document.getElementById('c_cmd').innerHTML='';const r=await post('/loadcal',{name:n});renderCal(r,'c_result');}
 let CURFIL='';
 function depthStrip(dc){let s='<div style="display:flex;gap:2px;margin-top:6px;flex-wrap:wrap">';dc.forEach(x=>{s+='<div style="text-align:center;font-size:11px;color:#555"><div style="width:54px;height:54px;background:'+x[1]+';border:1px solid #bbb;border-radius:4px"></div>'+x[0]+'mm<br>'+x[1]+'</div>';});return s+'</div>';}
-async function huePrev(){const v=document.getElementById('hue_sl').value;document.getElementById('hue_val').textContent=v+'°';const r=await post('/huepreview',{name:CURFIL,hue:v});if(r.ok)document.getElementById('dc_strip').innerHTML=depthStrip(r.depth_colors);}
-async function saveHue(){const v=document.getElementById('hue_sl').value;const r=await post('/savehue',{name:CURFIL,hue:v});document.getElementById('hue_st').textContent=r.ok?('✓ saved '+r.hue+'°'):(r.stderr||'');}
+function _adjv(){return {hue:document.getElementById('hue_sl').value,sat:document.getElementById('sat_sl').value,bright:document.getElementById('bri_sl').value};}
+async function adjPrev(){const v=_adjv();
+ document.getElementById('hue_val').textContent=v.hue+'°';document.getElementById('sat_val').textContent=v.sat+'%';document.getElementById('bri_val').textContent=v.bright+'%';
+ const r=await post('/huepreview',{name:CURFIL,hue:v.hue,sat:v.sat,bright:v.bright});if(r.ok)document.getElementById('dc_strip').innerHTML=depthStrip(r.depth_colors);}
+async function saveHue(){const v=_adjv();const r=await post('/savehue',{name:CURFIL,hue:v.hue,sat:v.sat,bright:v.bright});document.getElementById('hue_st').textContent=r.ok?'✓ saved 已保存':(r.stderr||'');}
 function renderCal(res,target){
  let h='';
  const badpad=(res.warnings||[]).some(w=>/PAD MISMATCH/i.test(w));
@@ -674,9 +686,11 @@ function renderCal(res,target){
  if(res.primary&&!badpad){h+='<div class=ok><b>absorption /mm · 吸收系数</b> &nbsp; R '+res.primary.R+' &nbsp; G '+res.primary.G+' &nbsp; B '+res.primary.B+'</div>';}
  if(res.depth_colors&&res.depth_colors.length&&!badpad){CURFIL=nm;
    h+='<div class=ok><b>backlit colour by depth · 各厚度背光颜色</b>';
-   h+='<div class=row style="margin:5px 0"><label style="min-width:auto">hue nudge 色相微调</label> <input type=range id=hue_sl min=-40 max=40 step=1 value="'+(res.hue_shift||0)+'" style="width:220px;vertical-align:middle" oninput="huePrev()"> <span id=hue_val>'+(res.hue_shift||0)+'°</span> &nbsp;<button onclick="saveHue()">Save 保存</button> <span id=hue_st style="color:#2a7;font-size:12px"></span></div>';
+   h+='<div class=row style="margin:5px 0"><label style="min-width:96px">hue 色相</label><input type=range id=hue_sl min=-40 max=40 step=1 value="'+(res.hue_shift||0)+'" style="width:200px;vertical-align:middle" oninput="adjPrev()"> <span id=hue_val>'+(res.hue_shift||0)+'°</span></div>';
+   h+='<div class=row style="margin:5px 0"><label style="min-width:96px">saturation 饱和</label><input type=range id=sat_sl min=-60 max=60 step=1 value="'+(res.sat_shift||0)+'" style="width:200px;vertical-align:middle" oninput="adjPrev()"> <span id=sat_val>'+(res.sat_shift||0)+'%</span></div>';
+   h+='<div class=row style="margin:5px 0"><label style="min-width:96px">brightness 亮度</label><input type=range id=bri_sl min=-60 max=60 step=1 value="'+(res.bright_shift||0)+'" style="width:200px;vertical-align:middle" oninput="adjPrev()"> <span id=bri_val>'+(res.bright_shift||0)+'%</span> &nbsp;<button onclick="saveHue()">Save 保存</button> <span id=hue_st style="color:#2a7;font-size:12px"></span></div>';
    h+='<div id=dc_strip>'+depthStrip(res.depth_colors)+'</div>';
-   h+='<span style="color:#888;font-size:12px">how a solid pane looks backlit at each depth — nudge the hue if it doesn\\'t match the real filament by eye · 与实物色相不符时可微调</span></div>';}
+   h+='<span style="color:#888;font-size:12px">how a solid pane looks backlit at each depth — nudge if it doesn\\'t match the real filament by eye · 与实物不符时微调</span></div>';}
  if(rel){const CLS={'intense':'INTENSE 强吸收','normal-transparent':'normal 普通透明'};
    h+='<p><b>class 类别:</b> '+(CLS[rel.filament_class]||rel.filament_class);
    if(rel.mix_advice)h+='<br><span style="color:#b33">⚠ '+rel.mix_advice+'<br>该耗材吸收极强，混色占比请低于上限，否则会盖过其它颜色。</span>';h+='</p>';}
