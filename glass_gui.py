@@ -391,6 +391,8 @@ class Handler(BaseHTTPRequestHandler):
             data = {}
         try:
             out = fn(data)
+        except SystemExit as e:                      # in-process helpers raise it
+            out = {"ok": False, "stderr": "error: %s" % e}   # don't kill the server
         except Exception as e:
             import traceback
             out = {"ok": False, "stderr": "server error: %s\n%s"

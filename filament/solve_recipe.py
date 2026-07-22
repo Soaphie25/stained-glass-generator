@@ -148,8 +148,14 @@ def load_filament(name, cal_path, hue_override=None):
         elif c in white:
             a_c = white[c]["a"]
         else:
-            raise SystemExit("error: %s has no absorption for channel %s" %
-                             (cal_path, c))
+            # channel not measured -> assume near-opaque.  This happens for an
+            # INTENSE filament photographed white-only (e.g. blue fully absorbs red,
+            # so R never registers).  Assume it blocks that channel rather than
+            # crashing; add a matching colour-screen shot to measure it properly.
+            a_c = 8.0
+            sys.stderr.write("warning: %s has no %s-channel absorption -> assuming "
+                             "near-opaque (a=8); add a %s-screen shot to measure it\n"
+                             % (cal_path, c, c))
         a.append(a_c)
         # T0 = exp(intercept).  For a WEAK channel the ln T vs t line is nearly flat,
         # so its intercept SHOULD sit near the physical surface term (~0.92); if it is

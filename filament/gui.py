@@ -837,6 +837,8 @@ class Handler(BaseHTTPRequestHandler):
             data = {}
         try:
             out = fn(data)
+        except SystemExit as e:                      # in-process CLI helpers raise it
+            out = {"ok": False, "stderr": "error: %s" % e}   # don't kill the server
         except Exception as e:                       # never 500 silently
             out = {"ok": False, "stderr": "server error: %r" % e}
         self._send(200, "application/json", json.dumps(out).encode())
