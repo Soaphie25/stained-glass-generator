@@ -80,9 +80,15 @@ def do_convert(data):
     # vectorisation depends ONLY on the image + SVG params -- not palette/depth/max-dE.
     # If those are unchanged and fragments exist, reuse them (palette/depth-only edits
     # go straight to Update-preview without a re-vectorise).
+    # include the vectoriser's mtime so a code fix always busts the cache (else a
+    # palette-only re-run would reuse fragments made by the OLD vectoriser).
+    try:
+        vec_mtime = os.path.getmtime(os.path.join(ROOT, "png_to_stained_glass_svg.py"))
+    except OSError:
+        vec_mtime = 0
     key = (hashlib.sha1(raw).hexdigest(),
            json.dumps({k: svg.get(k) for k in _SVG_OPTS}, sort_keys=True),
-           json.dumps(flags, sort_keys=True))
+           json.dumps(flags, sort_keys=True), round(vec_mtime, 3))
     if (_CONVERT_CACHE.get("key") == key
             and glob.glob(os.path.join(ROOT, fragdir, "color_*.svg"))):
         return {"ok": True, "cmd": "(reused cached vectorisation — SVG params "
