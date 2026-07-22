@@ -440,6 +440,11 @@ def _locate_holes(rgb, layout):
     reg = layout["register_markers"]["corners"]
     names = ("top_left", "top_right", "bottom_right", "bottom_left")
     mm = np.array([[reg[n]["cx"], reg[n]["cy"]] for n in names], float)
+    if not (layout.get("reference_windows") or []):
+        raise PadDetectionError(
+            "this strip has no printed markers or windows -- pick its 4 physical "
+            "corners by hand (GUI: 'Pick markers manually'; CLI: --markers "
+            "'x1,y1;x2,y2;x3,y3;x4,y4')")
     win_mm = np.array([[w["cx"], w["cy"]] for w in layout["reference_windows"]], float)
     v = rgb.max(axis=2).astype(np.float32)
     h, w = v.shape
@@ -532,8 +537,7 @@ def _sample_cells_linear(layout, rgb0, max_dim, blur_frac, manual_markers=None):
     Works on a thickness pad ('cells') or a mixture pad ('pads')."""
     cells = layout.get("cells") or layout["pads"]
     cell_xy = np.array([[c["cx"], c["cy"]] for c in cells], float)
-    win = layout["reference_windows"]
-    win_xy = np.array([[w["cx"], w["cy"]] for w in win], float)
+    win = layout.get("reference_windows") or []
 
     rgb = _prep(rgb0, max_dim, blur_frac)
     if manual_markers:                               # hand-picked corners (orig px)
@@ -549,15 +553,22 @@ def _sample_cells_linear(layout, rgb0, max_dim, blur_frac, manual_markers=None):
     smooth = np.asarray(Image.fromarray(rgb).filter(
         ImageFilter.GaussianBlur(max(1.0, cpx * blur_frac))))
 
+    cell_rgb = srgb_to_linear(np.array(
+        [sample_patch(smooth, H, c["cx"], c["cy"], c["w"], c["h"]) for c in cells],
+        float) / 255.0)
+    if not win:
+        # No bare-screen windows (the continuous mixture STRIP): return the RAW
+        # linear cell colour, un-normalised.  The caller fixes exposure from the
+        # two pure ends (which equal the ironed single-cals) -- see mixture.run_fit.
+        return cell_rgb, H, corners, np.ones(3, float)
+
+    win_xy = np.array([[w["cx"], w["cy"]] for w in win], float)
     win_rgb = srgb_to_linear(np.array(
         [sample_patch(smooth, H, w["cx"], w["cy"], 2 * w["r"], 2 * w["r"], frac=0.9)
          for w in win], float) / 255.0)
     good = np.isfinite(win_rgb).all(axis=1)
     planes = fit_reference_plane(win_xy[good], win_rgb[good])
     ref = eval_plane(planes, cell_xy)
-    cell_rgb = srgb_to_linear(np.array(
-        [sample_patch(smooth, H, c["cx"], c["cy"], c["w"], c["h"]) for c in cells],
-        float) / 255.0)
     T = np.clip(cell_rgb / np.clip(ref, 1e-6, None), 0, 1.5)
     # per-channel reference saturation (max window mean, linear): ~1.0 => the bare
     # screen clipped in that channel, so its transmittance there is untrustworthy.
@@ -775,12 +786,32 @@ def _manual_H(layout, points, rgb):
     reg = layout["register_markers"]["corners"]
     mm = np.array([[reg[n]["cx"], reg[n]["cy"]] for n in
                    ("top_left", "top_right", "bottom_right", "bottom_left")], float)
-    win = np.array([[w["cx"], w["cy"]] for w in layout["reference_windows"]], float)
+    win = np.array([[w["cx"], w["cy"]] for w in
+                    (layout.get("reference_windows") or [])], float)
     v = rgb.max(axis=2).astype(np.float32)
     h, w = v.shape
     P = np.array(points, float)
     c = P.mean(axis=0)                                # sort clicks into quad order
     P = P[np.argsort(np.arctan2(P[:, 1] - c[1], P[:, 0] - c[0]))]
+
+    if len(win) == 0:
+        # Continuous STRIP: no windows to disambiguate.  Pick the labelling whose
+        # edge-length pattern matches the mm rectangle (maps the long side to the
+        # long side); the residual 180-deg (start<->end) ambiguity is resolved
+        # later in mixture.run_fit by comparison to the predicted pure ends.
+        def _edges(q):
+            e = np.array([np.hypot(*(q[i] - q[(i + 1) % 4])) for i in range(4)])
+            return e / max(e.sum(), 1e-9)
+        me = _edges(mm)
+        best = None
+        for flip in (P, P[::-1]):
+            for roll in range(4):
+                q = np.roll(flip, roll, axis=0)
+                score = -float(np.abs(_edges(q) - me).sum())
+                if best is None or score > best[0]:
+                    best = (score, homography(mm, q))
+        return best[1]
+
     best = None
     for flip in (P, P[::-1]):
         for roll in range(4):

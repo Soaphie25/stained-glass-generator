@@ -361,11 +361,51 @@ def run_fit(opts):
         rev = sum(abs(Tn[0, c] - predB[c]) + abs(Tn[-1, c] - predA[c]) for c in chans)
         return (Tn[::-1], True) if rev < fwd - 1e-9 else (Tn, False)
 
+    # The continuous STRIP has no bare-screen windows, so _sample returns RAW linear
+    # cell colour: fix exposure from the two ends instead.  pred_start/pred_end are
+    # the model's transmittance at the strip's first/last ratio (= the pure single-
+    # cals for a default 0..100 ramp), which double as the white reference.
+    no_windows = not (layout.get("reference_windows") or [])
+    sf, ef = pads[0]["pct_b"] / 100.0, pads[-1]["pct_b"] / 100.0
+    pred_start = _baseline_tau(fA, fB, sf, Tmm)
+    pred_end = _baseline_tau(fA, fB, ef, Tmm)
+
+    def _orient_raw(raw, chans):
+        """Orient a RAW strip by matching its end-to-end log ratio to the predicted
+        ends -- exposure-invariant, so it works before the exposure is known."""
+        r = np.clip(np.asarray(raw, float), 1e-6, None)
+        lr = np.log(np.clip(pred_start, 1e-9, None) / np.clip(pred_end, 1e-9, None))
+        fwd = sum(abs(np.log(r[0, c] / r[-1, c]) - lr[c]) for c in chans)
+        rev = sum(abs(np.log(r[-1, c] / r[0, c]) - lr[c]) for c in chans)
+        return (r[::-1], True) if rev < fwd - 1e-9 else (r, False)
+
+    def _norm_ends(raw, chans):
+        """Fix exposure per channel: incident light interpolates linearly between
+        end0 (raw/pred_start) and endN (raw/pred_end).  tau = raw / incident."""
+        r = np.clip(np.asarray(raw, float), 0, None)
+        out = r.copy()
+        n = len(r)
+        for c in chans:
+            Es = r[0, c] / max(pred_start[c], 1e-6)
+            Ee = r[-1, c] / max(pred_end[c], 1e-6)
+            for i in range(n):
+                t = i / (n - 1) if n > 1 else 0.0
+                out[i, c] = r[i, c] / max(Es * (1 - t) + Ee * t, 1e-9)
+        return np.clip(out, 0, 1.5)
+
+    def _screen(raw, chans):
+        """Orient + normalise one screen's ramp: endpoint-referenced for the
+        window-less strip, bare-screen-normalised (already) otherwise."""
+        if no_windows:
+            o, fl = _orient_raw(raw, chans)
+            return _norm_ends(o, chans), fl
+        return _orient(raw, chans)
+
     # White measures all 3 channels; an optional colour screen re-measures ITS
     # channel at high SNR (all the light in one channel) -- decisive for a PALE mix.
     flips, T = [], None
     if opts.white:
-        T, fl = _orient(_sample(opts.white, _mk(opts.markers))[0], (0, 1, 2))
+        T, fl = _screen(_sample(opts.white, _mk(opts.markers))[0], (0, 1, 2))
         if fl:
             flips.append("white")
     STRONG_A = 0.5
@@ -384,13 +424,13 @@ def run_fit(opts):
                   % (scr, "RGB"[ch], who))
             continue
         Tc, _, _, sat = _sample(path, _mk(getattr(opts, "markers_" + scr, None)))
-        if sat[ch] >= 0.95:                           # near-clipped -> inflated ratio
+        if not no_windows and sat[ch] >= 0.95:        # near-clipped -> inflated ratio
             print("NOTE: %s screen is over-exposed (ref %.2f, near clipping) -- its "
                   "%s transmittance is inflated; kept white for that channel. "
                   "Re-shoot it darker (watch the %s histogram)."
                   % (scr, sat[ch], "RGB"[ch], "RGB"[ch]))
             continue
-        Tc, fl = _orient(Tc, (ch,))                   # orient by ITS OWN channel
+        Tc, fl = _screen(Tc, (ch,))                   # orient + normalise by ITS channel
         if fl:
             flips.append(scr)
         if T is None:
@@ -402,9 +442,13 @@ def run_fit(opts):
         raise SystemExit("error: no usable mixture photo -- pass --white and/or "
                          "--red/--green/--blue")
     if flips:
-        print("NOTE: flipped %s ramp(s) so pad0 = pure %s (screens shot at "
-              "different rotations; A+B mixing is symmetric)."
-              % (", ".join(flips), fA.name))
+        print("NOTE: flipped %s ramp(s) so cell0 = %s%% B end near pure %s (screens "
+              "shot at different rotations; A+B mixing is symmetric)."
+              % (", ".join(flips), int(round(sf * 100)), fA.name))
+    if no_windows:
+        print("NOTE: window-less strip -- exposure fixed from the two ends (the pure "
+              "ends equal the ironed single-cals), so the ends match by construction "
+              "and the endpoint check below is informational.")
     T = np.clip(np.asarray(T, float), 0, 1)
     # The mixture pad's PURE ends carry the same print-line artifact we IRON away for
     # the single cals -- and those single cals are the clean truth for pad0/padN.  So

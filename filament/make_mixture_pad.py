@@ -1,34 +1,29 @@
 #!/usr/bin/env python3
-"""Generate a sub-layer MIXTURE calibration pad for two transparent filaments.
+"""Generate a sub-layer MIXTURE calibration STRIP for two transparent filaments.
 
 Companion to ``make_calibration_pad.py`` (which ramps a SINGLE filament's
-thickness).  This pad instead ramps the MIX RATIO between two filaments A and B
+thickness).  This strip instead ramps the MIX RATIO between two filaments A and B
 at a FIXED total thickness, to calibrate Bambu-Studio-style "sub-layer" colour
 mixing.
 
-We do NOT author the sublayers ourselves.  Each pad is a SOLID block tagged with
-a mix ratio; Bambu Studio's Color Mixing does the sub-layer slicing.  That keeps
-the calibration pad and the production panes on the exact same mixing engine.
-
-Design (per the agreed spec):
-  * ``--steps`` + 1 connected PADS (default 11): pad 0 = pure A, pad N = pure B,
-    pad i = (N-i)/N of A + i/N of B.  Each pad is a solid block sitting DIRECTLY
-    on the screen, so pad 0 and pad N are exactly A and B in the light path.
-  * The pads are tied into ONE rigid piece by a thin connective WEB in the gaps
-    only (never under a pad, so it can't tint the mix).
-  * Reference windows are HOLES through the web (bare-screen normalisation).
-  * 4 corner registration squares -- DEFAULT: square HOLES through the web (bright
-    when backlit), so the pad prints in ONLY the two mix filaments (no black swap);
-    hand-pick them in the analyser.  --black-markers = opaque caps (needs a swap).
-
-Each pad is emitted as its OWN 3MF object so a per-pad mix ratio can be attached.
-The authoritative ratios are in ``layout.json``.  Embedding the ratio in Bambu's
-own project config is done from a real Bambu color-mix export (TODO: wire once the
-sample lands -- see ``_bambu_mix_config``); the geometry + ratios are ready now.
+Design (the redesigned continuous strip):
+  * ONE ROW of contiguous cells, edge to edge, forming a single continuous A->B
+    gradient bar -- easy to judge by eye and trivial for CV to segment.
+  * ``--ramp-step`` = the %B increment per cell.  Cell 0 = ``--start``%B,
+    cell N = ``--end``%B; with the defaults (start 0, end 100, step 10) that is
+    11 cells 0/10/../100 %B.  Pick a sub-range (e.g. 20..60) to zoom a region.
+  * Each cell is its OWN Bambu part tagged with its mix ratio (Bambu Studio's
+    Color Mixing does the sub-layer slicing -- same engine as the panes).  The
+    cells share faces, so the strip prints as one rigid piece.
+  * total width = ``--cell-w`` * n_cells, total height = ``--cell-h``.
+  * NO black markers and NO reference windows: the strip is a clean rectangle;
+    hand-pick its 4 physical corners in the analyser (always-on manual picking).
+    The analyser normalises exposure from the two pure ends (which equal the
+    ironed single-cals) and auto-detects which end is A vs B.
 
 Output (default ``filament/mixpad/``):
-  * ``mixture_pad.3mf``   -- 11 pad parts + web + black markers, one assembly.
-  * ``layout.json``       -- pad ratios + positions in mm, for the analyser.
+  * ``mixture_pad.3mf``   -- the gradient strip (Bambu project, ratios pre-set).
+  * ``layout.json``       -- cell ratios + positions in mm, for the analyser.
   * ``mixture_pad_preview.png``.
 """
 import argparse
@@ -40,14 +35,14 @@ import zipfile
 import numpy as np
 from PIL import Image, ImageDraw
 
-# reuse the box->mesh + plate-with-holes helpers from the single-filament pad
+# reuse the box->mesh helpers from the single-filament pad
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from make_calibration_pad import _mesh_xml, write_stl, _plate_with_holes  # noqa: E402
+from make_calibration_pad import _mesh_xml, write_stl  # noqa: E402
 from bambu_mix3mf import write_bambu_color_mix_3mf, default_template  # noqa: E402
 
 
 # --------------------------------------------------------------------------- #
-# 3MF writer: one coloured OBJECT per part (pads get their own ids so a per-pad
+# 3MF writer: one coloured OBJECT per part (cells get their own ids so a per-cell
 # mix ratio can be attached), all grouped into a single aligned assembly.
 # --------------------------------------------------------------------------- #
 def write_3mf_objects(path, objects, offset=(10.0, 10.0)):
@@ -96,173 +91,83 @@ def write_3mf_objects(path, objects, offset=(10.0, 10.0)):
         z.writestr("3D/3dmodel.model", model)
 
 
-def _shift_boxes(boxes, dx):
-    """Translate a box list by dx in X (for laying batched ramps across the plate)."""
-    return [(x0 + dx, y0, z0, x1 + dx, y1, z1)
+def _shift_boxes(boxes, dx=0.0, dy=0.0):
+    """Translate a box list by (dx, dy) -- dx lays batched strips across the plate
+    (unused here) and dy stacks them."""
+    return [(x0 + dx, y0 + dy, z0, x1 + dx, y1 + dy, z1)
             for (x0, y0, z0, x1, y1, z1) in boxes]
-
-
-def _pad_parts(layout, pad_objs, web_boxes, mk_boxes,
-               slot_a=1, slot_b=2, dx=0.0, tag=""):
-    """Map ONE mixture ramp to bambu_mix3mf parts using slots ``slot_a``/``slot_b``
-    for pure A/B (and their mixes), shifted by ``dx``.  For a batch, call once per
-    ramp with its own slot pair + offset + a name tag."""
-    steps = layout["steps"]
-    ca, cb = np.array([70, 130, 210]), np.array([220, 140, 60])
-    parts = []
-    for i, o in enumerate(pad_objs):
-        bx = _shift_boxes(o["boxes"], dx)
-        nm = o["name"] + tag
-        if i == 0:
-            parts.append({"name": nm, "boxes": bx, "slot": slot_a})
-        elif i == steps:
-            parts.append({"name": nm, "boxes": bx, "slot": slot_b})
-        else:
-            b = i / steps
-            col = "#%02X%02X%02X" % tuple(int(x) for x in ca * (1 - b) + cb * b)
-            parts.append({"name": nm, "boxes": bx,
-                          "mix": {"components": [slot_a, slot_b],
-                                  "ratios": [1 - b, b], "colour": col}})
-    parts.append({"name": "web_A" + tag, "boxes": _shift_boxes(web_boxes, dx),
-                  "slot": slot_a})
-    if mk_boxes:                                     # black caps only in that mode
-        parts.append({"name": "markers" + tag,
-                      "boxes": _shift_boxes(mk_boxes, dx), "slot": 3})
-    return parts
-
-
-def _bases(mk_boxes):
-    b = [{"colour": "#66A3D2"}, {"colour": "#D2A366"}]           # A, B
-    if mk_boxes:
-        b.append({"colour": "#111111"})                          # black caps
-    return b
-
-
-BASES = [{"colour": "#66A3D2"}, {"colour": "#D2A366"}, {"colour": "#111111"}]
 
 
 # --------------------------------------------------------------------------- #
 def _mix_color(f, ca=(70, 130, 210), cb=(220, 140, 60)):
-    """Interpolated display colour A->B for a fraction-B f, as #RRGGBBAA."""
+    """Interpolated display colour A->B for a fraction-B f, as #RRGGBB."""
     c = (np.array(ca) * (1 - f) + np.array(cb) * f).round().astype(int)
-    return "#%02X%02X%02XCC" % tuple(c)
+    return "#%02X%02X%02X" % tuple(c)
 
 
 def build_layout(opts):
-    """Compute geometry; return (layout, pad_objects, web_boxes, marker_boxes)."""
-    steps = opts.steps
-    n_pads = steps + 1
-    T = round(opts.thickness_mm, 4)             # every pad is this thick, solid
+    """Compute the continuous-strip geometry.
 
-    pad_w = opts.screen_w_mm - 2 * opts.margin_mm
-    pad_h = opts.screen_h_mm - 2 * opts.margin_mm
-    if pad_w <= 20 or pad_h <= 40:
-        raise SystemExit("error: screen minus margins is too small for a pad")
+    Returns (layout, fracs) where ``fracs`` is the list of fraction-B per cell.
+    The 3MF geometry is assembled in ``main`` (so it can batch/stack strips)."""
+    start, end, step = float(opts.start), float(opts.end), float(opts.ramp_step)
+    if not (0 <= start < end <= 100):
+        raise SystemExit("error: need 0 <= --start < --end <= 100")
+    if step <= 0:
+        raise SystemExit("error: --ramp-step must be > 0")
+    span = end - start
+    n_steps = max(1, int(round(span / step)))
+    n_cells = n_steps + 1
+    actual_step = span / n_steps                 # exact endpoints even if span%step
+    fracs = [(start + i * actual_step) / 100.0 for i in range(n_cells)]
 
-    edge, header = opts.edge_mm, opts.header_mm
-    cols = opts.cols
-    rows = int(np.ceil(n_pads / cols))
+    cw, ch = round(opts.cell_w, 4), round(opts.cell_h, 4)
+    T = round(opts.depth_mm, 4)
+    pad_w = round(cw * n_cells, 4)
+    pad_h = ch
 
-    gx0, gx1 = edge, pad_w - edge
-    gy0, gy1 = edge, pad_h - edge - header
-    pitch_x = (gx1 - gx0) / cols
-    pitch_y = (gy1 - gy0) / rows
-    csz = max(opts.min_cell_mm, min(pitch_x, pitch_y) * opts.cell_fill)
-
-    pad_objs, pads, pad_holes = [], [], []
-    for i in range(n_pads):
-        r, c = i // cols, i % cols
-        cx = gx0 + (c + 0.5) * pitch_x
-        cy = gy1 - (r + 0.5) * pitch_y          # pad 0 at top-left
-        x0, x1 = cx - csz / 2, cx + csz / 2
-        y0, y1 = cy - csz / 2, cy + csz / 2
-        fb = i / steps
-        pad_objs.append({"boxes": [(x0, y0, 0.0, x1, y1, T)],
-                         "name": "pad%02d_%dB" % (i, round(100 * fb)),
-                         "color": _mix_color(fb)})
-        pad_holes.append((x0, y0, x1, y1))
-        pads.append({"index": i, "ratio_b": round(fb, 4),
-                     "pct_a": round(100 * (1 - fb), 2), "pct_b": round(100 * fb, 2),
-                     "cx": round(cx, 3), "cy": round(cy, 3),
-                     "w": round(csz, 3), "h": round(csz, 3)})
-
-    # reference windows = holes at the gap corners of the pad grid
-    wr = min(pitch_x, pitch_y) * 0.13
-    windows, win_holes = [], []
-    for r in range(rows + 1):
-        for c in range(cols + 1):
-            wx, wy = gx0 + c * pitch_x, gy1 - r * pitch_y
-            if edge + 1 < wx < pad_w - edge - 1 and edge + 1 < wy < pad_h - edge - 1:
-                windows.append({"cx": round(wx, 3), "cy": round(wy, 3),
-                                "r": round(wr, 3)})
-                win_holes.append((wx - wr, wy - wr, wx + wr, wy + wr))
-
-    # 4 corner registration squares.  DEFAULT: square HOLES through the web (bright
-    # when backlit) so the pad prints in ONLY the two mix filaments (no black swap);
-    # hand-pick the corners in the analyser.  --black-markers = opaque caps (needs a
-    # black filament + a swap, auto-detectable).
-    mk, inset, cap = opts.marker_mm, opts.marker_inset_mm, opts.marker_h_mm
-    corner_xy = {
-        "bottom_left":  (inset, inset),
-        "bottom_right": (pad_w - inset - mk, inset),
-        "top_right":    (pad_w - inset - mk, pad_h - inset - mk),
-        "top_left":     (inset, pad_h - inset - mk),
-    }
-    reg, corner_holes = {}, []
-    for name, (mx0, my0) in corner_xy.items():
-        reg[name] = {"cx": round(mx0 + mk / 2, 3), "cy": round(my0 + mk / 2, 3),
-                     "w": mk, "h": mk}
-        if not opts.black_markers:
-            corner_holes.append((mx0, my0, mx0 + mk, my0 + mk))
-
-    # connective WEB (filament A, unsampled): whole pad minus pad footprints, window
-    # holes and (holes mode) corner holes -> one rigid piece, no tinting of any pad.
-    web = opts.web_mm
-    web_boxes = _plate_with_holes(0, 0, pad_w, pad_h, 0.0, web,
-                                  pad_holes + win_holes + corner_holes)
-
-    mk_boxes = []
-    if opts.black_markers:                           # opaque caps + orientation dot
-        mz0, mz1 = web, round(web + cap, 4)
-        for name, (mx0, my0) in corner_xy.items():
-            mk_boxes.append((mx0, my0, mz0, mx0 + mk, my0 + mk, mz1))
-        dot = mk * 0.45
-        dx0, dy0 = inset + mk + opts.marker_gap_mm, pad_h - inset - mk * 0.45
-        mk_boxes.append((dx0, dy0, mz0, dx0 + dot, dy0 + dot, mz1))
-        reg["orientation_dot"] = {"cx": round(dx0 + dot / 2, 3),
-                                  "cy": round(dy0 + dot / 2, 3),
-                                  "w": round(dot, 3), "h": round(dot, 3),
-                                  "note": "black dot next to the TOP-LEFT corner"}
+    cells = []
+    for i, fr in enumerate(fracs):
+        x0 = i * cw
+        cells.append({"index": i, "ratio_b": round(fr, 4),
+                      "pct_a": round(100 * (1 - fr), 2),
+                      "pct_b": round(100 * fr, 2),
+                      "cx": round(x0 + cw / 2, 3), "cy": round(ch / 2, 3),
+                      "w": round(cw, 3), "h": round(ch, 3)})
 
     layout = {
-        "units": "mm", "mode": "sub-layer-mixture",
-        "filaments": ["A", "B"], "mixing": "Bambu Studio Color Mixing (solid "
-        "pads tagged with a ratio; the slicer makes the sublayers)",
-        "screen_w_mm": opts.screen_w_mm, "screen_h_mm": opts.screen_h_mm,
-        "margin_mm": opts.margin_mm,
-        "pad_w_mm": round(pad_w, 3), "pad_h_mm": round(pad_h, 3),
-        "steps": steps, "n_pads": n_pads, "total_thickness_mm": T,
-        "web_mm": web, "cols": cols, "rows": rows, "cell_mm": round(csz, 3),
+        "units": "mm", "mode": "sub-layer-mixture-strip",
+        "filaments": ["A", "B"],
+        "mixing": "Bambu Studio Color Mixing (contiguous strip; each cell is a "
+                  "solid part tagged with a ratio; the slicer makes the sublayers)",
+        "pad_w_mm": pad_w, "pad_h_mm": pad_h,
+        "total_thickness_mm": T, "cell_w_mm": cw, "cell_h_mm": ch,
+        "start_pct": start, "end_pct": end, "ramp_step_pct": round(actual_step, 3),
+        "n_cells": n_cells, "n_steps": n_steps,
         "origin": "bottom-left",
         "pad_corners": [[0, 0], [pad_w, 0], [pad_w, pad_h], [0, pad_h]],
+        # The strip is a clean rectangle: pick its 4 physical corners by hand.  No
+        # black caps, no bright holes -- the corners double as the registration.
         "register_markers": {
-            "style": "black_caps" if opts.black_markers else "holes",
-            "color": ("black opaque cap on top of the web (separate part)"
-                      if opts.black_markers else
-                      "square HOLE through the web (bright when backlit); hand-pick "
-                      "these 4 corners -- pad is only the two mix filaments"),
-            "size_mm": mk, "corners": reg},
-        "pads": pads,
-        "reference_windows": windows,
+            "style": "holes",
+            "color": "no printed markers -- hand-pick the 4 physical corners of "
+                     "the strip (bottom-left, bottom-right, top-right, top-left)",
+            "corners": {
+                "bottom_left":  {"cx": 0.0,   "cy": 0.0,   "w": 0.0, "h": 0.0},
+                "bottom_right": {"cx": pad_w, "cy": 0.0,   "w": 0.0, "h": 0.0},
+                "top_right":    {"cx": pad_w, "cy": pad_h, "w": 0.0, "h": 0.0},
+                "top_left":     {"cx": 0.0,   "cy": pad_h, "w": 0.0, "h": 0.0}}},
+        "reference_windows": [],                 # none: exposure is fixed from the ends
+        "pads": cells,
     }
-    return layout, pad_objs, web_boxes, mk_boxes
+    return layout, fracs
 
 
 # --------------------------------------------------------------------------- #
 def write_preview(layout, path, px_per_mm=8):
     W = int(layout["pad_w_mm"] * px_per_mm)
     H = int(layout["pad_h_mm"] * px_per_mm)
-    img = Image.new("RGB", (W + 2, H + 2), (245, 245, 250))
+    img = Image.new("RGB", (W + 2, H + 40), (245, 245, 250))
     d = ImageDraw.Draw(img)
 
     def X(x):
@@ -271,33 +176,47 @@ def write_preview(layout, path, px_per_mm=8):
     def Y(y):
         return int((layout["pad_h_mm"] - y) * px_per_mm) + 1
 
-    d.rectangle([X(0), Y(layout["pad_h_mm"]), X(layout["pad_w_mm"]), Y(0)],
-                fill=(224, 232, 240), outline=(120, 120, 130), width=2)
-    for w in layout["reference_windows"]:
-        rr = w["r"] * px_per_mm
-        d.ellipse([X(w["cx"]) - rr, Y(w["cy"]) - rr,
-                   X(w["cx"]) + rr, Y(w["cy"]) + rr],
-                  fill=(255, 255, 255), outline=(150, 150, 160))
-    ca, cb = np.array([70, 130, 210]), np.array([220, 140, 60])
     for p in layout["pads"]:
         f = p["pct_b"] / 100.0
-        col = tuple((ca * (1 - f) + cb * f).round().astype(int))
+        col = tuple(int(_mix_color(f)[k:k + 2], 16) for k in (1, 3, 5))
         x0, y0 = X(p["cx"] - p["w"] / 2), Y(p["cy"] + p["h"] / 2)
         x1, y1 = X(p["cx"] + p["w"] / 2), Y(p["cy"] - p["h"] / 2)
         d.rectangle([x0, y0, x1, y1], fill=col, outline=(70, 70, 80))
-        d.text((x0 + 3, y0 + 3), "%d%%B" % p["pct_b"],
+        d.text((x0 + 3, y1 + 3), "%d" % p["pct_b"],
                fill=(255, 255, 255) if 20 < p["pct_b"] < 90 else (30, 30, 30))
-    holes_style = layout["register_markers"].get("style") == "holes"
-    for name, m in layout["register_markers"]["corners"].items():
-        if holes_style:
-            fill, oc = (255, 255, 255), (150, 150, 160)   # bright bare-screen holes
-        else:
-            fill = (15, 15, 15)
-            oc = (230, 40, 40) if name == "orientation_dot" else (0, 0, 0)
-        d.rectangle([X(m["cx"] - m["w"] / 2), Y(m["cy"] + m["h"] / 2),
-                     X(m["cx"] + m["w"] / 2), Y(m["cy"] - m["h"] / 2)],
-                    fill=fill, outline=oc, width=2)
+    # mark the 4 corners the analyser expects hand-picked
+    for m in layout["register_markers"]["corners"].values():
+        r = 4
+        d.ellipse([X(m["cx"]) - r, Y(m["cy"]) - r, X(m["cx"]) + r, Y(m["cy"]) + r],
+                  outline=(200, 40, 40), width=2)
+    d.text((4, H + 6), "A --> B  (%d cells, %g%% step, %g..%g%%B)  pick the 4 red "
+           "corners" % (layout["n_cells"], layout["ramp_step_pct"],
+                        layout["start_pct"], layout["end_pct"]),
+           fill=(60, 60, 70))
     img.save(path)
+
+
+# --------------------------------------------------------------------------- #
+def _strip_parts(fracs, layout, slot_a, slot_b, dy=0.0, tag=""):
+    """Map one gradient strip to bambu_mix3mf parts using slots ``slot_a``/``slot_b``
+    for A/B (and their mixes), stacked by ``dy``."""
+    cw, ch = layout["cell_w_mm"], layout["cell_h_mm"]
+    T = layout["total_thickness_mm"]
+    ca, cb = np.array([70, 130, 210]), np.array([220, 140, 60])
+    parts = []
+    for i, fr in enumerate(fracs):
+        box = [(i * cw, dy, 0.0, i * cw + cw, dy + ch, T)]
+        nm = "c%02d_%dB%s" % (i, round(100 * fr), tag)
+        if fr <= 1e-9:
+            parts.append({"name": nm, "boxes": box, "slot": slot_a})
+        elif fr >= 1 - 1e-9:
+            parts.append({"name": nm, "boxes": box, "slot": slot_b})
+        else:
+            col = "#%02X%02X%02X" % tuple(int(x) for x in ca * (1 - fr) + cb * fr)
+            parts.append({"name": nm, "boxes": box,
+                          "mix": {"components": [slot_a, slot_b],
+                                  "ratios": [1 - fr, fr], "colour": col}})
+    return parts
 
 
 # --------------------------------------------------------------------------- #
@@ -305,45 +224,33 @@ def main(argv=None):
     p = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--screen-w-mm", type=float, default=64.0)
-    p.add_argument("--screen-h-mm", type=float, default=138.0)
-    p.add_argument("--margin-mm", type=float, default=3.0)
-    p.add_argument("--steps", type=int, default=10,
-                   help="ratio steps; makes steps+1 pads (default 10 -> 11 pads, "
-                        "0/10/../100%% B)")
-    p.add_argument("--thickness-mm", type=float, default=1.0,
-                   help="solid pad thickness; Bambu mixes sublayers within it "
-                        "(default 1.0)")
-    p.add_argument("--cols", type=int, default=3, help="pad grid columns (default 3)")
-    p.add_argument("--cell-fill", type=float, default=0.72)
-    p.add_argument("--min-cell-mm", type=float, default=8.0)
-    p.add_argument("--edge-mm", type=float, default=2.0)
-    p.add_argument("--header-mm", type=float, default=9.0)
-    p.add_argument("--web-mm", type=float, default=0.3,
-                   help="connective web thickness in the gaps (default 0.3)")
+    p.add_argument("--depth-mm", type=float, default=1.0,
+                   help="solid strip thickness / light path; Bambu mixes sublayers "
+                        "within it (default 1.0)")
+    p.add_argument("--cell-w", type=float, default=10.0,
+                   help="width of each gradient cell mm (default 10)")
+    p.add_argument("--cell-h", type=float, default=20.0,
+                   help="height of the strip mm (default 20)")
+    p.add_argument("--ramp-step", type=float, default=10.0,
+                   help="%%B increment per cell (default 10 -> 0/10/../100%%B)")
+    p.add_argument("--start", type=float, default=0.0,
+                   help="%%B of the first cell (default 0 = pure A)")
+    p.add_argument("--end", type=float, default=100.0,
+                   help="%%B of the last cell (default 100 = pure B)")
     p.add_argument("--count", type=int, default=1,
-                   help="BATCH: lay this many ramps (1-3) across one plate, each on "
-                        "its own A/B filament pair -- print several pairs in one job "
-                        "(holes pads only)")
+                   help="BATCH: stack this many strips (1-3) on one plate, each on "
+                        "its own A/B filament pair -- print several pairs in one job")
     p.add_argument("--gap-mm", type=float, default=6.0,
-                   help="gap between batched ramps (default 6)")
+                   help="gap between stacked strips (default 6)")
     p.add_argument("--plate-mm", type=float, default=250.0,
-                   help="printer plate width for the batch fit check (default 250)")
+                   help="printer plate height for the batch fit check (default 250)")
     p.add_argument("--colors", default=None,
                    help="comma-separated #hex per slot A1,B1,A2,B2,... (default "
                         "a preset palette)")
-    p.add_argument("--black-markers", action="store_true",
-                   help="use opaque BLACK corner caps (auto-detectable, needs a "
-                        "black filament swap) instead of the default corner HOLES")
-    p.add_argument("--marker-mm", type=float, default=6.0)
-    p.add_argument("--marker-inset-mm", type=float, default=1.0)
-    p.add_argument("--marker-h-mm", type=float, default=0.4)
-    p.add_argument("--marker-gap-mm", type=float, default=1.5)
     p.add_argument("--also-stl", action="store_true")
     p.add_argument("--bambu-template", default=None,
                    help="Bambu .3mf export to template from; defaults to the "
-                        "bundled P2S template so the ratios open pre-set. Pass "
-                        "your own export for a different machine")
+                        "bundled P2S template so the ratios open pre-set")
     p.add_argument("--plain", action="store_true",
                    help="write a plain 3MF (no embedded mix ratios; Bambu flags "
                         "it 'not from Bambu Lab')")
@@ -354,7 +261,7 @@ def main(argv=None):
         os.path.abspath(__file__)), "mixpad")
     os.makedirs(out_dir, exist_ok=True)
 
-    layout, pad_objs, web_boxes, mk_boxes = build_layout(opts)
+    layout, fracs = build_layout(opts)
     tmf = os.path.join(out_dir, "mixture_pad.3mf")
     lay = os.path.join(out_dir, "layout.json")
     prev = os.path.join(out_dir, "mixture_pad_preview.png")
@@ -362,67 +269,61 @@ def main(argv=None):
         json.dump(layout, f, indent=2)
     write_preview(layout, prev)
 
-    # BATCH: N ramps across the plate (holes pads only -- each on its own A/B pair)
-    holes_mode = not mk_boxes
-    n = max(1, min(3, opts.count)) if holes_mode else 1
-    step = layout["pad_w_mm"] + opts.gap_mm
-    while n > 1 and (n * layout["pad_w_mm"] + (n - 1) * opts.gap_mm) > opts.plate_mm:
+    # BATCH: N strips stacked in Y (each on its own A/B pair)
+    pitch = layout["pad_h_mm"] + opts.gap_mm
+    n = max(1, min(3, opts.count))
+    while n > 1 and (n * layout["pad_h_mm"] + (n - 1) * opts.gap_mm) > opts.plate_mm:
         n -= 1
-    if holes_mode and n < min(3, max(1, opts.count)):
-        sys.stderr.write("note: %d ramps don't fit %.0f mm; using %d\n"
+    if n < min(3, max(1, opts.count)):
+        sys.stderr.write("note: %d strips don't fit %.0f mm tall; using %d\n"
                          % (opts.count, opts.plate_mm, n))
-    offsets = [i * step for i in range(n)]
     palette = ["#66A3D2", "#D2A366", "#66C28A", "#C266A3", "#A3C266", "#8A66C2"]
     cols = ([c.strip() for c in opts.colors.split(",")] if opts.colors else palette)
 
-    # mixture_pad.3mf IS the Bambu project with ratios pre-set (bundled template
-    # unless --plain or a custom --bambu-template); plain has no embedded mixes.
     template = None if opts.plain else (opts.bambu_template or default_template())
     if template:
         parts, bases = [], []
-        for i, off in enumerate(offsets):
-            sa, sb = 2 * i + 1, 2 * i + 2
-            tag = "" if n == 1 else "_r%d" % (i + 1)
-            parts += _pad_parts(layout, pad_objs, web_boxes, mk_boxes,
-                                slot_a=sa, slot_b=sb, dx=off, tag=tag)
-            bases += [{"colour": cols[(2 * i) % len(cols)]},
-                      {"colour": cols[(2 * i + 1) % len(cols)]}]
-        if mk_boxes:                                 # black caps -> a 3rd base (slot 3)
-            bases.append({"colour": "#111111"})
+        for j in range(n):
+            sa, sb = 2 * j + 1, 2 * j + 2
+            tag = "" if n == 1 else "_s%d" % (j + 1)
+            parts += _strip_parts(fracs, layout, sa, sb, dy=j * pitch, tag=tag)
+            bases += [{"colour": cols[(2 * j) % len(cols)]},
+                      {"colour": cols[(2 * j + 1) % len(cols)]}]
         info = write_bambu_color_mix_3mf(tmf, template, bases, parts)
-        kind = ("Bambu project, %d ramp%s (%d slot%s%s), ratios pre-set"
+        kind = ("Bambu project, %d strip%s (%d slot%s), ratios pre-set"
                 % (n, "s" if n > 1 else "", info["n_slots"],
-                   "s" if info["n_slots"] > 1 else "",
-                   ", incl. black caps" if mk_boxes else "; corners are HOLES"))
+                   "s" if info["n_slots"] > 1 else ""))
     else:
         objects = []
-        for off in offsets:
-            objects += [{"boxes": _shift_boxes(o["boxes"], off),
-                         "name": o["name"], "color": o["color"]} for o in pad_objs]
-            objects.append({"boxes": _shift_boxes(web_boxes, off), "name": "web_A",
-                            "color": "#CFE6FFCC"})
-        if mk_boxes:
-            objects.append({"boxes": mk_boxes, "name": "Black", "color": "#111111FF"})
+        for j in range(n):
+            for i, fr in enumerate(fracs):
+                cw, ch, T = layout["cell_w_mm"], layout["cell_h_mm"], \
+                    layout["total_thickness_mm"]
+                objects.append({"boxes": [(i * cw, j * pitch, 0.0,
+                                           i * cw + cw, j * pitch + ch, T)],
+                                "name": "c%02d_%dB" % (i, round(100 * fr)),
+                                "color": _mix_color(fr) + "FF"})
         write_3mf_objects(tmf, objects)
-        kind = ("PLAIN 3MF (%d ramp%s), no embedded mixes -- Bambu flags 'not from "
+        kind = ("PLAIN 3MF (%d strip%s), no embedded mixes -- Bambu flags 'not from "
                 "Bambu Lab'; drop --plain for a real Bambu project"
                 % (n, "s" if n > 1 else ""))
 
     stls = ""
     if opts.also_stl:
-        allb = [b for o in pad_objs for b in o["boxes"]] + web_boxes
+        allb = [(i * layout["cell_w_mm"], 0.0, 0.0,
+                 i * layout["cell_w_mm"] + layout["cell_w_mm"], layout["cell_h_mm"],
+                 layout["total_thickness_mm"]) for i in range(len(fracs))]
         write_stl(os.path.join(out_dir, "mixture_pad_body.stl"), allb)
         stls = "  (+ body STL)\n"
-        if mk_boxes:
-            write_stl(os.path.join(out_dir, "mixture_pad_markers.stl"), mk_boxes)
 
     sys.stderr.write(
-        "mixture pad %.1f x %.1f mm | %d solid pads 0..100%%B in %d%% steps | "
-        "%.2f mm thick | pad %.1f mm\n"
+        "mixture strip %.1f x %.1f mm | %d cells %g..%g%%B in %g%% steps | "
+        "%.2f mm thick | cell %g x %g mm\n"
         "wrote:\n  %s\n     ^ %s\n%s  %s\n  %s\n" % (
-            layout["pad_w_mm"], layout["pad_h_mm"], layout["n_pads"],
-            int(round(100 / opts.steps)), layout["total_thickness_mm"],
-            layout["cell_mm"], tmf, kind, stls, lay, prev))
+            layout["pad_w_mm"], layout["pad_h_mm"], layout["n_cells"],
+            layout["start_pct"], layout["end_pct"], layout["ramp_step_pct"],
+            layout["total_thickness_mm"], layout["cell_w_mm"], layout["cell_h_mm"],
+            tmf, kind, stls, lay, prev))
     return 0
 
 

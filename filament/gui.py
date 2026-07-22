@@ -434,9 +434,14 @@ def do_genpad(data):
 
 
 def do_genmixpad(data):
+    end = data.get("end")
     args = ["python3", "filament/make_mixture_pad.py",
-            "--screen-w-mm", str(data.get("w") or 64),
-            "--screen-h-mm", str(data.get("h") or 138)] + _batch_args(data)
+            "--depth-mm", str(data.get("depth") or 1.0),
+            "--cell-w", str(data.get("cell_w") or 10),
+            "--cell-h", str(data.get("cell_h") or 20),
+            "--ramp-step", str(data.get("step") or 10),
+            "--start", str(data.get("start") or 0),
+            "--end", str(end if end not in (None, "") else 100)] + _batch_args(data)
     rc, out, err = sh(args)
     return _attach_pad({"ok": rc == 0, "cmd": " ".join(args), "stdout": out,
                         "stderr": err}, "filament/mixpad")
@@ -545,14 +550,18 @@ PAGE = """<!doctype html><html><head><meta charset=utf-8>
 
 <div id=mix class="panel">
  <div class=req>Calibrates the sub-layer mixing of a PAIR (fits per-filament σ).  校准两种耗材的分层混色（拟合每种耗材的 σ）。
-• Print the 11-pad mixture ramp with filament A in slot 1 and B in slot 2, then photograph it over WHITE (same exposure rules as above).
-  用 A 放 1 号、B 放 2 号打印 11 格混色渐变板，再在白屏下拍摄（曝光要求同上）。
+• Print the continuous A→B gradient strip with filament A in slot 1 and B in slot 2, then photograph it over WHITE (same exposure rules as above).
+  用 A 放 1 号、B 放 2 号打印 A→B 连续渐变条，再在白屏下拍摄（曝光要求同上）。
 • Both filaments must already be calibrated (tab 1).  两种耗材都需先在「单色校准」完成。</div>
- <fieldset><legend>① Generate mixture pad&nbsp;·&nbsp;生成混色渐变板</legend>
-  <div class=row>screen 屏幕 <input type=number id=mp_w value=64 style="width:60px"> × <input type=number id=mp_h value=138 style="width:60px"> mm</div>
-  <div class=row style="color:#777;font-size:12px">11-pad ramp A→B; load filament A in slot 1, B in slot 2 in the slicer.<br>11 格 A→B 渐变；切片时 A 放 1 号槽、B 放 2 号槽。</div>
-  <div class=row>batch 批量 <input type=number id=mp_count value=1 min=1 max=3 style="width:50px"> ramp(s) on one plate · A/B colours per ramp 每条渐变的 A/B 颜色 &nbsp;<input type=color id=mp_c0 value="#66a3d2"><input type=color id=mp_c1 value="#d2a366"><input type=color id=mp_c2 value="#66c28a"><input type=color id=mp_c3 value="#c266a3"><input type=color id=mp_c4 value="#a3c266"><input type=color id=mp_c5 value="#8a66c2"></div>
-  <div class=row><button class=go onclick="genPad('/genmixpad','mp',6)">Generate 3MF 生成</button> <span id=mp_status></span></div>
+ <fieldset><legend>① Generate mixture strip&nbsp;·&nbsp;生成混色渐变条</legend>
+  <div class=row>depth 厚度 <input type=number id=mp_depth value=1.0 step=0.1 style="width:60px"> mm
+    &nbsp; cell 单元 <input type=number id=mp_cell_w value=10 step=1 style="width:55px"> × <input type=number id=mp_cell_h value=20 step=1 style="width:55px"> mm</div>
+  <div class=row>ramp step 步进 <input type=number id=mp_step value=10 step=1 style="width:55px"> %B
+    &nbsp; range 范围 <input type=number id=mp_start value=0 min=0 max=100 style="width:55px"> → <input type=number id=mp_end value=100 min=0 max=100 style="width:55px"> %B
+    <span style="color:#777;font-size:12px">&nbsp;cells = span/step + 1 · 单元数=范围/步进+1</span></div>
+  <div class=row style="color:#777;font-size:12px">Contiguous A→B strip, one part per cell (A in slot 1, B in slot 2). Pick a sub-range to zoom a region. Total width = cell-w × cells, height = cell-h.<br>连续 A→B 渐变条，每格一个部件（A 放 1 号槽、B 放 2 号槽）。可选子范围放大局部。总宽=单元宽×格数，高=单元高。</div>
+  <div class=row>batch 批量 <input type=number id=mp_count value=1 min=1 max=3 style="width:50px"> strip(s) stacked on one plate · A/B colours per strip 每条的 A/B 颜色 &nbsp;<input type=color id=mp_c0 value="#66a3d2"><input type=color id=mp_c1 value="#d2a366"><input type=color id=mp_c2 value="#66c28a"><input type=color id=mp_c3 value="#c266a3"><input type=color id=mp_c4 value="#a3c266"><input type=color id=mp_c5 value="#8a66c2"></div>
+  <div class=row><button class=go onclick="genMixPad()">Generate 3MF 生成</button> <span id=mp_status></span></div>
   <div id=mp_result></div>
  </fieldset>
  <fieldset><legend>② Calibrate a 2-colour mixture&nbsp;·&nbsp;校准双色混合</legend>
@@ -631,6 +640,20 @@ async function genPad(url,pfx,ncol){const st=document.getElementById(pfx+'_statu
    h+='<div class=row style="margin-top:6px"><a class=go style="text-decoration:none;padding:8px 14px" href="/file?path='+encodeURIComponent(r.download)+'" download>⬇ Download '+fn+' 下载</a> &nbsp; <span style="color:#555">open in Bambu Studio &amp; print · 用 Bambu Studio 打开并打印</span></div>';}
  if(r.images)r.images.forEach(p=>h+=img(p));
  document.getElementById(pfx+'_result').innerHTML=h;}
+
+async function genMixPad(){const st=document.getElementById('mp_status');st.textContent='running…';
+ document.getElementById('mp_result').innerHTML='';
+ const cols=[];for(let i=0;i<6;i++){const el=document.getElementById('mp_c'+i);if(el)cols.push(el.value);}
+ const g=id=>document.getElementById(id).value;
+ const body={depth:g('mp_depth'),cell_w:g('mp_cell_w'),cell_h:g('mp_cell_h'),
+   step:g('mp_step'),start:g('mp_start'),end:g('mp_end'),
+   count:g('mp_count'),colors:cols};
+ const r=await post('/genmixpad',body);st.textContent='';
+ let h=r.ok?'<div class=done>✓ strip generated · 已生成渐变条</div>':'<div class=warn><pre class=out>'+(r.stderr||r.stdout||'')+'</pre></div>';
+ if(r.download){const fn=r.download.split('/').pop();
+   h+='<div class=row style="margin-top:6px"><a class=go style="text-decoration:none;padding:8px 14px" href="/file?path='+encodeURIComponent(r.download)+'" download>⬇ Download '+fn+' 下载</a> &nbsp; <span style="color:#555">open in Bambu Studio &amp; print · 用 Bambu Studio 打开并打印</span></div>';}
+ if(r.images)r.images.forEach(p=>h+=img(p));
+ document.getElementById('mp_result').innerHTML=h;}
 
 const MKC={};   // context ('cal'/'mix') -> {MK, orig, disp, img}
 async function pickMarkers(ctx,fileId,areaId){const el=document.getElementById(fileId);
