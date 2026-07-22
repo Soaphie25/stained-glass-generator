@@ -189,6 +189,7 @@ def _cal_payload(name):
         pass
     return {"name": name, "primary": cal.get("primary_absorption_per_mm"),
             "depth_colors": depth_colors,
+            "hue_shift": cal.get("hue_shift_deg", 0),
             "reliability": cal.get("reliability"),
             "warnings": cal.get("warnings", []),
             "screens": {s: {"max_ref": d.get("max_ref"),
@@ -197,6 +198,84 @@ def _cal_payload(name):
                             "expected_aspect": d.get("expected_aspect")}
                         for s, d in cal.get("screens", {}).items()},
             "images": imgs}
+
+
+def _cal_json_path(name):
+    for fn in ("calibration.json", "calibration_INVALID.json"):
+        p = os.path.join(ROOT, CALROOT, name, fn)
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def _depth_hexes(name, hue=None):
+    from solve_recipe import load_filament, linear_to_hex, predict_linear
+    p = _cal_json_path(name)
+    if not p:
+        return []
+    f = load_filament(name, p, hue_override=hue)
+    return [[t, "#" + linear_to_hex(predict_linear([f], [t]))]
+            for t in (0.4, 0.8, 1.2, 1.6, 2.0, 2.5, 3.0)]
+
+
+def do_huepreview(data):
+    name = (data.get("name") or "").strip()
+    try:
+        hue = float(data.get("hue") or 0)
+    except ValueError:
+        hue = 0.0
+    return {"ok": True, "depth_colors": _depth_hexes(name, hue), "hue": hue}
+
+
+def do_savehue(data):
+    import json
+    name = (data.get("name") or "").strip()
+    p = os.path.join(ROOT, CALROOT, name, "calibration.json")
+    if not os.path.isfile(p):
+        return {"ok": False, "stderr": "no calibration.json for '%s'" % name}
+    c = json.load(open(p))
+    c["hue_shift_deg"] = float(data.get("hue") or 0)
+    json.dump(c, open(p, "w"), indent=2)
+    return {"ok": True, "hue": c["hue_shift_deg"]}
+
+
+def _grad(a, b, thk, sig):
+    import mixture as MX
+    out = os.path.join(CALROOT, "_gradient.png")
+    r = MX.render_gradient(a, b, CALROOT, thk, os.path.join(ROOT, out),
+                           sigma_override=sig)
+    r.update({"ok": True, "image": out})
+    return r
+
+
+def do_gradient(data):
+    a, b = (data.get("a") or "").strip(), (data.get("b") or "").strip()
+    if not a or not b or a == b:
+        return {"ok": False, "stderr": "pick two different filaments"}
+    sig = data.get("sigma")
+    sig = float(sig) if sig not in (None, "") else None
+    return _grad(a, b, float(data.get("thickness") or 1.6), sig)
+
+
+def do_savesigma(data):
+    import json
+    import mixture as MX
+    a, b = (data.get("a") or "").strip(), (data.get("b") or "").strip()
+    if not a or not b or a == b:
+        return {"ok": False, "stderr": "pick two different filaments"}
+    sig = float(data.get("sigma") or 0)
+    thk = float(data.get("thickness") or 1.6)
+    pair = "+".join(sorted((a, b)))
+    d = os.path.join(ROOT, CALROOT, "mix", pair)
+    os.makedirs(d, exist_ok=True)
+    r = MX.render_gradient(a, b, CALROOT, thk, os.path.join(d, "mixture_fit.png"),
+                           sigma_override=sig)
+    json.dump({"filaments": [a, b], "thickness_mm": thk,
+               "sigma": {a: [sig] * 3, b: [sig] * 3}, "manual": True,
+               "ratios": [pct / 100.0 for pct, _ in r["rows"]],
+               "measured_tau": []}, open(os.path.join(d, "mixture_calibration.json"),
+                                         "w"), indent=2)
+    return {"ok": True, "pair": pair, "sigma": sig}
 
 
 def do_loadcal(data):
@@ -373,6 +452,8 @@ def do_lut(data):
 POST = {"/analyze": do_analyze, "/decode": do_decode,
         "/mixfit": do_mixfit, "/filaments": do_filaments,
         "/loadcal": do_loadcal, "/delcal": do_delcal,
+        "/huepreview": do_huepreview, "/savehue": do_savehue,
+        "/gradient": do_gradient, "/savesigma": do_savesigma,
         "/mixtures": do_mixtures, "/loadmix": do_loadmix,
         "/genpad": do_genpad, "/genmixpad": do_genmixpad,
         "/map": do_map, "/lut": do_lut}
@@ -492,6 +573,16 @@ PAGE = """<!doctype html><html><head><meta charset=utf-8>
   <span style="color:#777;font-size:12px">&nbsp;shows the measured-vs-predicted ramp 显示实测/预测对比</span>
  </fieldset>
  <div id=mv_result></div>
+ <fieldset><legend>④ Preview / adjust a predicted gradient&nbsp;·&nbsp;预览/调整预测渐变</legend>
+  <div class=row><label>A</label><select id=gr_a></select>
+    <label style="min-width:40px">B</label><select id=gr_b></select>
+    <label style="min-width:90px">thickness 厚度</label><input type=number id=gr_thk value=1.6 step=0.1 style="width:70px">
+    <button class=go onclick="gradPrev(false)" style="margin-left:6px">Preview 预览</button></div>
+  <div class=row><label>σ scatter 散射</label><input type=range id=gr_sig min=-2 max=2 step=0.05 value=0 style="width:240px;vertical-align:middle" oninput="gradPrev(true)"> <span id=gr_sigv>0.00</span>
+    &nbsp;<button onclick="saveSig()">Save σ 保存</button> <span id=gr_st style="color:#2a7;font-size:12px"></span></div>
+  <div class=row style="color:#888;font-size:12px">Preview any pair's predicted ramp (incl. generalizable 'g' pairs, no ramp printed). Drag σ if the 'g' gradient looks off; Save writes it as a direct pair. 预览任意组合的预测渐变（含可泛化 g 对，无需打印）；如不准可拖动 σ 并保存。</div>
+  <div id=gr_img></div>
+ </fieldset>
  <div id=mx_cmd></div><div id=mx_result></div>
 </div>
 
@@ -566,6 +657,10 @@ async function analyze(){
 }
 async function loadCal(){const n=document.getElementById('cv_name').value;if(!n)return;
  document.getElementById('c_cmd').innerHTML='';const r=await post('/loadcal',{name:n});renderCal(r,'c_result');}
+let CURFIL='';
+function depthStrip(dc){let s='<div style="display:flex;gap:2px;margin-top:6px;flex-wrap:wrap">';dc.forEach(x=>{s+='<div style="text-align:center;font-size:11px;color:#555"><div style="width:54px;height:54px;background:'+x[1]+';border:1px solid #bbb;border-radius:4px"></div>'+x[0]+'mm<br>'+x[1]+'</div>';});return s+'</div>';}
+async function huePrev(){const v=document.getElementById('hue_sl').value;document.getElementById('hue_val').textContent=v+'°';const r=await post('/huepreview',{name:CURFIL,hue:v});if(r.ok)document.getElementById('dc_strip').innerHTML=depthStrip(r.depth_colors);}
+async function saveHue(){const v=document.getElementById('hue_sl').value;const r=await post('/savehue',{name:CURFIL,hue:v});document.getElementById('hue_st').textContent=r.ok?('✓ saved '+r.hue+'°'):(r.stderr||'');}
 function renderCal(res,target){
  let h='';
  const badpad=(res.warnings||[]).some(w=>/PAD MISMATCH/i.test(w));
@@ -577,10 +672,11 @@ function renderCal(res,target){
  else if(res.primary){h+='<div class=done>'+(res.loaded?'📂 loaded · 已加载 ':'✓ calibrated · 校准成功 ')+'&nbsp;→ filament/calibration/'+nm+'/</div>';}
  const rel=res.reliability;
  if(res.primary&&!badpad){h+='<div class=ok><b>absorption /mm · 吸收系数</b> &nbsp; R '+res.primary.R+' &nbsp; G '+res.primary.G+' &nbsp; B '+res.primary.B+'</div>';}
- if(res.depth_colors&&res.depth_colors.length&&!badpad){
-   h+='<div class=ok><b>backlit colour by depth · 各厚度背光颜色</b><div style="display:flex;gap:2px;margin-top:6px;flex-wrap:wrap">';
-   res.depth_colors.forEach(dc=>{h+='<div style="text-align:center;font-size:11px;color:#555"><div style="width:54px;height:54px;background:'+dc[1]+';border:1px solid #bbb;border-radius:4px"></div>'+dc[0]+'mm<br>'+dc[1]+'</div>';});
-   h+='</div><span style="color:#888;font-size:12px">how a solid pane of this filament looks backlit, at each print thickness · 该耗材实心板在各打印厚度下背光的样子</span></div>';}
+ if(res.depth_colors&&res.depth_colors.length&&!badpad){CURFIL=nm;
+   h+='<div class=ok><b>backlit colour by depth · 各厚度背光颜色</b>';
+   h+='<div class=row style="margin:5px 0"><label style="min-width:auto">hue nudge 色相微调</label> <input type=range id=hue_sl min=-40 max=40 step=1 value="'+(res.hue_shift||0)+'" style="width:220px;vertical-align:middle" oninput="huePrev()"> <span id=hue_val>'+(res.hue_shift||0)+'°</span> &nbsp;<button onclick="saveHue()">Save 保存</button> <span id=hue_st style="color:#2a7;font-size:12px"></span></div>';
+   h+='<div id=dc_strip>'+depthStrip(res.depth_colors)+'</div>';
+   h+='<span style="color:#888;font-size:12px">how a solid pane looks backlit at each depth — nudge the hue if it doesn\\'t match the real filament by eye · 与实物色相不符时可微调</span></div>';}
  if(rel){const CLS={'intense':'INTENSE 强吸收','normal-transparent':'normal 普通透明'};
    h+='<p><b>class 类别:</b> '+(CLS[rel.filament_class]||rel.filament_class);
    if(rel.mix_advice)h+='<br><span style="color:#b33">⚠ '+rel.mix_advice+'<br>该耗材吸收极强，混色占比请低于上限，否则会盖过其它颜色。</span>';h+='</p>';}
@@ -602,6 +698,17 @@ function renderCal(res,target){
  if(res.images)res.images.forEach(p=>h+=img(p));
  document.getElementById(target).innerHTML=h;
 }
+async function gradPrev(useSlider){const a=document.getElementById('gr_a').value,b=document.getElementById('gr_b').value;
+ if(!a||!b||a===b){document.getElementById('gr_img').innerHTML='<span style="color:#a33">pick two different filaments 选两种不同耗材</span>';return;}
+ const body={a,b,thickness:document.getElementById('gr_thk').value};
+ if(useSlider){const sv=document.getElementById('gr_sig').value;document.getElementById('gr_sigv').textContent=parseFloat(sv).toFixed(2);body.sigma=sv;}
+ const r=await post('/gradient',body);
+ if(!r.ok){document.getElementById('gr_img').innerHTML='<div class=warn>'+(r.stderr||'')+'</div>';return;}
+ if(!useSlider){document.getElementById('gr_sig').value=r.sigma_hint;document.getElementById('gr_sigv').textContent=parseFloat(r.sigma_hint).toFixed(2);}
+ document.getElementById('gr_img').innerHTML='<div style="color:#555;font-size:12px">'+r.source+'</div>'+img(r.image);}
+async function saveSig(){const a=document.getElementById('gr_a').value,b=document.getElementById('gr_b').value;
+ const r=await post('/savesigma',{a,b,sigma:document.getElementById('gr_sig').value,thickness:document.getElementById('gr_thk').value});
+ document.getElementById('gr_st').textContent=r.ok?('✓ saved '+r.pair+' σ='+r.sigma):(r.stderr||'');if(r.ok)loadFils();}
 async function loadMix(){const p=document.getElementById('mv_pair').value;if(!p)return;
  const r=await post('/loadmix',{pair:p});let h='';
  if(!r.ok){h='<div class=warn><pre class=out>'+(r.stderr||'')+'</pre></div>';}
@@ -625,7 +732,7 @@ async function delFil(){const n=document.getElementById('cv_name').value;if(!n)r
  document.getElementById('c_result').innerHTML='';document.getElementById('c_cmd').innerHTML='';
  alert('Deleted 已删除: '+(r.removed||[]).join(', '));await loadFils();}
 async function loadFils(){const r=await post('/filaments',{});const fs=r.filaments||[];
- for(const id of ['mx_a','mx_b','cv_name']){const s=document.getElementById(id);if(!s)continue;const cur=s.value;
+ for(const id of ['mx_a','mx_b','cv_name','gr_a','gr_b']){const s=document.getElementById(id);if(!s)continue;const cur=s.value;
    s.innerHTML=fs.map(f=>'<option'+(f==cur?' selected':'')+'>'+f+'</option>').join('');}
  if(fs.length>1&&document.getElementById('mx_b').selectedIndex==document.getElementById('mx_a').selectedIndex)document.getElementById('mx_b').selectedIndex=1;
  const rm=await post('/mixtures',{});const ms=rm.mixtures||[];const mv=document.getElementById('mv_pair');

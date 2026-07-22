@@ -119,8 +119,22 @@ class Filament:
             self.name, np.round(self.a, 3).tolist(), np.round(self.T0, 3).tolist())
 
 
-def load_filament(name, cal_path):
-    """Build a Filament from an analyze_calibration.py calibration.json."""
+def _hue_rotate(a, deg):
+    """Rotate the absorption vector ``a`` around the grey axis (1,1,1) by ``deg`` --
+    keeps its darkness (grey component) and saturation (chroma magnitude) but shifts
+    WHICH channel is absorbed = a hue nudge, for hand-matching a filament to the eye."""
+    a = np.asarray(a, float)
+    if not deg:
+        return a
+    k = np.ones(3) / np.sqrt(3.0)
+    th = np.radians(float(deg))
+    return (a * np.cos(th) + np.cross(k, a) * np.sin(th)
+            + k * np.dot(k, a) * (1 - np.cos(th)))
+
+
+def load_filament(name, cal_path, hue_override=None):
+    """Build a Filament from an analyze_calibration.py calibration.json.  A stored
+    ``hue_shift_deg`` (or ``hue_override``, for live preview) rotates the hue."""
     with open(cal_path) as f:
         cal = json.load(f)
     prim = cal.get("primary_absorption_per_mm", {})
@@ -149,6 +163,8 @@ def load_filament(name, cal_path):
         if a_c < STRONG_A and not (T0_FLOOR <= t0 <= 1.0):
             t0 = T0_DEFAULT
         T0.append(t0)
+    hue = cal.get("hue_shift_deg", 0) if hue_override is None else hue_override
+    a = _hue_rotate(a, hue).tolist()                           # manual eye-match nudge
     max_frac = cal.get("reliability", {}).get("recommended_max_mix_fraction", 1.0)
     return Filament(name, a, T0, max_frac=max_frac)
 

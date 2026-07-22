@@ -261,6 +261,65 @@ def _draw_mix_swatches(nameA, nameB, rows, path):
     img.save(path)
 
 
+def render_gradient(nameA, nameB, cal_root, thickness, out_path, steps=10,
+                    sigma_override=None):
+    """Render the MODEL-PREDICTED A->B gradient for ANY pair -- including a
+    generalizable ('g') pair that has no measured ramp.  Uses the pair's posterior
+    sigma if directly calibrated, else the generalized per-filament sigma, else
+    baseline (sigma=0).  ``sigma_override`` (a scalar) forces a uniform sigma on both
+    filaments -- the manual slider.  Returns {source, rows, sigma_hint}."""
+    import glob as _g
+    import os as _os
+    from PIL import Image, ImageDraw
+    from solve_recipe import (load_filament, load_sigma, predict_mix_linear,
+                              linear_to_hex)
+    fA = load_filament(nameA, _os.path.join(cal_root, nameA, "calibration.json"))
+    fB = load_filament(nameB, _os.path.join(cal_root, nameB, "calibration.json"))
+    sigma, pair = load_sigma(_g.glob(_os.path.join(cal_root, "mix", "*",
+                                                   "mixture_calibration.json")))
+    key = tuple(sorted((nameA, nameB)))
+    if key in pair:
+        gA, gB, gsrc = pair[key][nameA], pair[key][nameB], "direct (measured sigma)"
+    elif nameA in sigma and nameB in sigma:
+        gA, gB, gsrc = sigma[nameA], sigma[nameB], "generalized sigma (g)"
+    else:
+        gA = gB = np.zeros(3)
+        gsrc = "baseline (no sigma)"
+    sigma_hint = round(float(np.mean(np.concatenate([gA, gB]))), 3)
+    if sigma_override is not None:
+        v = float(sigma_override)
+        sA = sB = np.array([v, v, v], float)
+        src = "manual sigma=%.2f" % v
+    else:
+        sA, sB, src = gA, gB, gsrc
+    rows = []
+    for i in range(steps + 1):
+        fb = i / steps
+        lin = predict_mix_linear([fA, fB], [sA, sB], [1 - fb, fb], thickness)
+        rows.append((int(round(fb * 100)), linear_to_hex(lin)))
+
+    fb_, fh = _font(24), _font(20)
+    sw, hh, lx = 260, 60, 150
+    top = 52
+    W, H = lx + sw + 20, top + hh * len(rows) + 10
+    img = Image.new("RGB", (W, H), (250, 250, 252))
+    d = ImageDraw.Draw(img)
+    d.text((10, 12), "%s -> %s   %s @ %.1fmm" % (nameA, nameB, src, thickness),
+           fill=(30, 30, 42), font=fh)
+    d.text((10, 32), "%s%% / %s%%" % (nameA[:4], nameB[:4]),
+           fill=(90, 90, 100), font=_font(16))
+    for i, (pct, hx) in enumerate(rows):
+        y = top + i * hh + 3
+        d.text((10, y + hh // 2 - 14), "%d / %d" % (100 - pct, pct),
+               fill=(70, 70, 80), font=fb_)
+        rgb = tuple(int(hx[k:k + 2], 16) for k in (0, 2, 4))
+        d.rectangle([lx, y, lx + sw, y + hh - 6], fill=rgb)
+        tc = (20, 20, 20) if sum(rgb) > 360 else (240, 240, 240)
+        d.text((lx + 8, y + hh // 2 - 12), "#" + hx, fill=tc, font=fb_)
+    img.save(out_path)
+    return {"source": src, "rows": rows, "sigma_hint": sigma_hint}
+
+
 def run_fit(opts):
     """Fit per-filament sigma from a printed sub-layer mixture ramp photo."""
     import json
