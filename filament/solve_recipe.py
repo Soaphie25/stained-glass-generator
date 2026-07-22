@@ -377,8 +377,18 @@ def sublayer_candidates(pool, sigma, pair_sigma=None, tmin=0.4, tmax=3.0,
     ratios = [r for r in PRINTABLE_RATIOS if 0 < r < 1]   # slicer-buildable only
     out = []
     # a pale diluent = a non-intense filament that's light enough to dilute with
-    has_pale = any(m.max_frac >= 1.0 - 1e-9 and float(np.max(m.a)) < 0.45
-                   for m in pool)
+    def _pale(m):
+        return float(np.max(m.a)) < 0.45             # low absorption/chroma
+    has_pale = any(m.max_frac >= 1.0 - 1e-9 and _pale(m) for m in pool)
+
+    def _dilute_ok(members):
+        # SPECTRUM-SIDE constraint: an INTENSE filament may only be mixed with PALE
+        # filaments (transparent / light-blue / yellow ...), never a SATURATED one --
+        # blue+red clashes to purple, blue+green to a muddy teal.  Keys off each
+        # filament's own absorption, so it holds for ANY colour set.
+        if not any(m.max_frac < 1.0 - 1e-9 for m in members):
+            return True                              # no intense filament -> anything
+        return all(_pale(m) for m in members if m.max_frac >= 1.0 - 1e-9)
 
     def emit(lin, rec):
         rec["_lin"] = lin
@@ -397,6 +407,8 @@ def sublayer_candidates(pool, sigma, pair_sigma=None, tmin=0.4, tmax=3.0,
     if max_filaments >= 2:
         for a, b in itertools.combinations(range(len(pool)), 2):
             A, B = pool[a], pool[b]
+            if not _dilute_ok([A, B]):               # intense only with pales
+                continue
             sA, sB, src = _pair_sigmas(A, B, sigma, pair_sigma)
             have = (src == "direct") or (A.name in sigma and B.name in sigma)
             for p in ratios:                             # p = fraction of B
@@ -415,6 +427,8 @@ def sublayer_candidates(pool, sigma, pair_sigma=None, tmin=0.4, tmax=3.0,
         r3 = np.round(np.arange(0.2, 0.81, 0.2), 3)
         for a, b, c in itertools.combinations(range(len(pool)), 3):
             mods = [pool[a], pool[b], pool[c]]
+            if not _dilute_ok(mods):                 # intense only with pales
+                continue
             sgs = [sigma.get(m.name, np.zeros(3)) for m in mods]
             have = all(m.name in sigma for m in mods)
             for fa in r3:
