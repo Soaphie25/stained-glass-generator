@@ -117,7 +117,8 @@ def _ring_area(r):
 
 def read_fragment(path):
     """Return (width_mm, height_mm, hex, rings) for a color_NN_<hex>.svg fragment.
-    Rings are all the coloured panes (the 1x1 black register rects are skipped)."""
+    Rings are all the coloured panes.  (The corner registration marks are <rect>
+    elements, not <path>, so they are never parsed here.)"""
     txt = open(path).read()
     m = re.search(r'viewBox="([-\d.]+) ([-\d.]+) ([-\d.]+) ([-\d.]+)"', txt)
     w, h = (float(m.group(3)), float(m.group(4))) if m else (0.0, 0.0)
@@ -126,8 +127,11 @@ def read_fragment(path):
     rings = []
     for pm in re.finditer(r'<path[^>]*\bd="([^"]+)"', txt):
         rings += _parse_path_d(pm.group(1))
-    # ignore the tiny 1x1mm corner registration squares
-    rings = [r for r in rings if abs(_ring_area(r)) > 0.5]
+    # drop only DEGENERATE (near-zero-area) rings, not small panes: an absolute
+    # mm^2 threshold (was 0.5) silently deleted real detail panes when the panel
+    # was scaled down (e.g. --max-size 75mm), leaving HOLES.  Registration marks
+    # are <rect>, already excluded above.
+    rings = [r for r in rings if abs(_ring_area(r)) > 1e-4]
     return w, h, hexc, rings
 
 
