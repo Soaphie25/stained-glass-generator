@@ -63,30 +63,49 @@ _SVG_OPTS = ("max-size-mm", "px-mm", "num-colors", "black-block-mm",
 _SVG_FLAGS = ("smooth-curves", "merge-leading")
 
 
+_CONVERT_CACHE = {}                                    # skip re-vectorising unchanged input
+
+
 def do_convert(data):
+    import hashlib
     work = os.path.join(ROOT, WORK)
     os.makedirs(work, exist_ok=True)
     f = data.get("image")
     if not f:
         return {"ok": False, "stderr": "pick an image 请选择图片"}
+    raw = base64.b64decode(f["b64"].split(",")[-1])
+    fragdir = os.path.join(WORK, "frag")
+    svg = data.get("svg") or {}
+    flags = {k: bool((data.get("flags") or {}).get(k)) for k in _SVG_FLAGS}
+    # vectorisation depends ONLY on the image + SVG params -- not palette/depth/max-dE.
+    # If those are unchanged and fragments exist, reuse them (palette/depth-only edits
+    # go straight to Update-preview without a re-vectorise).
+    key = (hashlib.sha1(raw).hexdigest(),
+           json.dumps({k: svg.get(k) for k in _SVG_OPTS}, sort_keys=True),
+           json.dumps(flags, sort_keys=True))
+    if (_CONVERT_CACHE.get("key") == key
+            and glob.glob(os.path.join(ROOT, fragdir, "color_*.svg"))):
+        return {"ok": True, "cmd": "(reused cached vectorisation — SVG params "
+                "unchanged)", "frag_dir": fragdir, "colors": _frag_colors(fragdir),
+                "cached": True}
     ext = os.path.splitext(f.get("filename", ""))[1] or ".png"
     img = os.path.join(WORK, "input" + ext)
     with open(os.path.join(ROOT, img), "wb") as fh:
-        fh.write(base64.b64decode(f["b64"].split(",")[-1]))
-    fragdir = os.path.join(WORK, "frag")
+        fh.write(raw)
     args = ["python3", "png_to_stained_glass_svg.py", img,
             "--fragments-dir", fragdir, "--leading-svg", os.path.join(WORK, "leading.svg"),
             "--fragment-color", "original"]
     for k in _SVG_OPTS:
-        v = (data.get("svg") or {}).get(k)
+        v = svg.get(k)
         if v not in (None, "", "auto-default"):
             args += ["--" + k, str(v)]
     for k in _SVG_FLAGS:                              # boolean flags (no value)
-        if (data.get("flags") or {}).get(k):
+        if flags.get(k):
             args += ["--" + k]
     rc, out, err = sh(args)
     if rc != 0:
         return {"ok": False, "cmd": " ".join(args), "stderr": err or out}
+    _CONVERT_CACHE["key"] = key
     return {"ok": True, "cmd": " ".join(args), "frag_dir": fragdir,
             "colors": _frag_colors(fragdir)}
 
@@ -232,7 +251,7 @@ PAGE = r"""<!doctype html><html><head><meta charset=utf-8>
 
 <fieldset><legend>① Filaments &amp; gamut&nbsp;·&nbsp;耗材与色域</legend>
  <div id=lut>checking… 检查中…</div>
- <div class=row style="font-size:13px;margin-top:4px"><label><input type=checkbox id=o_nosigma onchange="genGamut()"> Direct approximation · 直接近似 — skip mixture calibration; predict mixes from the single filaments only (slightly off, but no mixture ramps needed) 跳过混色校准，仅用单色预测混合（略有偏差，但无需打印渐变板）</label></div>
+ <div class=row style="font-size:13px;margin-top:4px"><label><input type=checkbox id=o_nosigma onchange="genGamut();if(CONVERTED)preview()"> Direct approximation · 直接近似 — skip mixture calibration; predict mixes from the single filaments only (slightly off, but no mixture ramps needed) 跳过混色校准，仅用单色预测混合（略有偏差，但无需打印渐变板）</label></div>
  <div id=gamut style="margin-top:8px"></div>
  <div id=sug_result style="margin-top:6px"></div>
 </fieldset>
@@ -262,8 +281,8 @@ PAGE = r"""<!doctype html><html><head><meta charset=utf-8>
 </fieldset>
 
 <fieldset><legend>③ Gamut preview&nbsp;·&nbsp;色域预览 <span style="font-weight:400;color:#777;font-size:12px">— printable colours 实际可打印颜色</span></legend>
- <div class=row>depth 厚度 <input type=number id=o_depth value=1.6 step=0.2 style="width:60px"> mm
-   &nbsp; max-ΔE (allow 3-mix) 三色阈值 <input type=number id=o_maxdelta value=20 style="width:60px">
+ <div class=row>depth 厚度 <input type=number id=o_depth value=1.6 step=0.2 style="width:60px" onchange="if(CONVERTED)preview()"> mm
+   &nbsp; max-ΔE (allow 3-mix) 三色阈值 <input type=number id=o_maxdelta value=20 style="width:60px" onchange="if(CONVERTED)preview()">
    &nbsp; <button class=go onclick="preview()">Update preview 更新预览</button> <span id=p_status></span></div>
  <div class=grid><div id=p_img></div><div id=p_table></div></div>
 </fieldset>
@@ -291,7 +310,7 @@ function svgOpts(){const m=$('o_leadmode').value;
  if(m==='tier'){o['tier-bold']=$('o_tierbold').value;o['tier-thin']=$('o_tierthin').value;}
  return o;}
 function svgFlags(){return {'smooth-curves':$('o_smooth').checked,'merge-leading':$('o_mergelead').checked};}
-let ALLFIL=[], SEL=[], SLOTS=4;
+let ALLFIL=[], SEL=[], SLOTS=4, CONVERTED=false;
 function params(){return {depth:$('o_depth').value,size:$('o_size').value,colors:$('o_colors').value,max_delta:$('o_maxdelta').value,filaments:SEL,no_sigma:$('o_nosigma').checked};}
 async function lut(){const r=await post('/lutstatus',{});
  if(!r.ready){$('lut').innerHTML='<div class=warn><b>No calibrated filaments yet · 尚无已校准耗材</b><br>Calibrate filaments first: run <code>python3 filament/gui.py</code> · 请先用耗材 GUI 校准：运行 <code>python3 filament/gui.py</code></div>';return;}
@@ -314,8 +333,8 @@ async function suggest(){const el=$('img');
  let h='<div style="color:#555;font-size:12px">Best '+r.slots+'-filament palettes for this image ('+r.n_colors+' colours) — click to apply · 点击应用最佳组合：</div><table style="font-size:13px">';
  r.ranked.forEach(x=>{h+='<tr><td><button onclick="applyPal(\''+x.filaments.join(',')+'\')">'+x.filaments.join(' + ')+'</button></td><td>&nbsp;mean ΔE '+x.mean_de.toFixed(1)+'</td><td>&nbsp;'+Math.round(x.oog_frac*100)+'% out-of-gamut 超色域</td></tr>';});
  h+='</table>';$('sug_result').innerHTML=h;}
-function applyPal(csv){SEL=csv.split(',').slice(0,SLOTS);renderFil();genGamut();}
-function togg(f){const i=SEL.indexOf(f);if(i>=0)SEL.splice(i,1);else if(SEL.length<SLOTS)SEL.push(f);renderFil();genGamut();}
+function applyPal(csv){SEL=csv.split(',').slice(0,SLOTS);renderFil();genGamut();if(CONVERTED)preview();}
+function togg(f){const i=SEL.indexOf(f);if(i>=0)SEL.splice(i,1);else if(SEL.length<SLOTS)SEL.push(f);renderFil();genGamut();if(CONVERTED)preview();}
 function addAms(){SLOTS=Math.min(8,SLOTS+4);renderFil();}
 async function genGamut(){$('gamut').innerHTML='<span style="color:#777">building gamut… 生成色域…</span>';
  const r=await post('/gamut',{filaments:SEL,no_sigma:$('o_nosigma').checked});
@@ -325,8 +344,8 @@ async function convert(){const el=$('img');if(!el.files[0]){alert('pick an image
  const image=await f2b64(el.files[0]);
  const r=await post('/convert',{image,svg:svgOpts(),flags:svgFlags()});$('c_status').textContent='';
  if(!r.ok){$('c_status').innerHTML='<span style="color:#a33">'+(r.stderr||'').slice(-200)+'</span>';return;}
- $('c_status').innerHTML='<span style="color:#2a7">✓ '+(r.colors||[]).length+' colours 种颜色</span>';
- preview();}
+ $('c_status').innerHTML='<span style="color:#2a7">✓ '+(r.colors||[]).length+' colours 种颜色'+(r.cached?' (reused vectorisation 复用矢量化)':'')+'</span>';
+ CONVERTED=true;preview();}
 async function preview(){$('p_status').textContent='mapping… 映射中…';
  const r=await post('/preview',params());$('p_status').textContent='';
  if(!r.ok){$('p_img').innerHTML='<div class=warn>'+(r.stderr||'')+'</div>';return;}
