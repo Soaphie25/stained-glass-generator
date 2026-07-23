@@ -320,59 +320,51 @@ def render_gradient(nameA, nameB, cal_root, thickness, out_path, steps=10,
     return {"source": src, "rows": rows, "sigma_hint": sigma_hint}
 
 
-def run_fit(opts):
-    """Fit per-filament sigma from a printed sub-layer mixture ramp photo."""
-    import json
-    import os
+def _mk(spec):
+    """Parse a '--markers' string 'x,y;x,y;x,y;x,y' into 4 (x,y) tuples (or None)."""
+    if not spec:
+        return None
+    if not isinstance(spec, str):                    # already a list of points
+        return [tuple(float(v) for v in p) for p in spec] if len(spec) == 4 else None
+    pts = [tuple(float(v) for v in p.split(",")) for p in spec.split(";")]
+    if len(pts) != 4:
+        raise SystemExit("error: markers need 4 'x,y' points")
+    return pts
+
+
+def _measure_pad(layout, photos, markers, fA, fB, Tmm, raw_ends=False, label=""):
+    """Sample ONE mixture strip -> (ratios, tau Nx3, anchored) after orient +
+    exposure-normalise + endpoint-anchor.
+
+    Exposure (window-less strip) is fixed from the pad's PURE ends -- the only
+    scatter-free reference.  A partial range (e.g. 0..50%) has ONE pure end: use
+    it as a uniform scale (the short strip has little vignette) instead of
+    interpolating to the non-pure end, which would zero the real scatter there."""
     import analyze_calibration as A
-    from solve_recipe import load_filament, linear_to_hex, delta_e
-    with open(opts.layout) as f:
-        layout = json.load(f)
-    fA = load_filament(opts.a.split("=")[0], opts.a.split("=", 1)[1])
-    fB = load_filament(opts.b.split("=")[0], opts.b.split("=", 1)[1])
-    if opts.out_dir is None:                          # natural: <root>/mix/<A>+<B>/
-        opts.out_dir = os.path.join(opts.cal_root, "mix",
-                                    "+".join(sorted((fA.name, fB.name))))
-    def _mk(spec):
-        if not spec:
-            return None
-        pts = [tuple(float(v) for v in p.split(",")) for p in spec.split(";")]
-        if len(pts) != 4:
-            raise SystemExit("error: --markers needs 4 'x,y' points")
-        return pts
-
-    def _sample(path, markers):
-        return A._sample_cells_linear(layout, A._load_photo(path), 1600, 0.03,
-                                      manual_markers=markers)
-
+    from solve_recipe import delta_e
     pads = layout["pads"]
-    Tmm = getattr(opts, "thickness", None) or layout["total_thickness_mm"]
-    predA, predB = _baseline_tau(fA, fB, 0.0, Tmm), _baseline_tau(fA, fB, 1.0, Tmm)
-
-    def _orient(Tin, chans):
-        """Flip a ramp so pad0 ~ pure A, comparing ONLY ``chans`` to the predicted
-        pure-A/pure-B ends.  The ramp is DIRECTIONAL (pad0=A .. last=B); each screen
-        is registered independently and a colour shot may be rotated/reversed vs the
-        others (portrait/landscape) -> its pad0 lands on a DIFFERENT physical cell,
-        so orient EACH screen before splicing its channel in.  A+B mixing is
-        symmetric, so flipping only fixes the ratio->pad mapping."""
-        Tn = np.clip(np.asarray(Tin, float), 0, 1)
-        fwd = sum(abs(Tn[0, c] - predA[c]) + abs(Tn[-1, c] - predB[c]) for c in chans)
-        rev = sum(abs(Tn[0, c] - predB[c]) + abs(Tn[-1, c] - predA[c]) for c in chans)
-        return (Tn[::-1], True) if rev < fwd - 1e-9 else (Tn, False)
-
-    # The continuous STRIP has no bare-screen windows, so _sample returns RAW linear
-    # cell colour: fix exposure from the two ends instead.  pred_start/pred_end are
-    # the model's transmittance at the strip's first/last ratio (= the pure single-
-    # cals for a default 0..100 ramp), which double as the white reference.
     no_windows = not (layout.get("reference_windows") or [])
     sf, ef = pads[0]["pct_b"] / 100.0, pads[-1]["pct_b"] / 100.0
     pred_start = _baseline_tau(fA, fB, sf, Tmm)
     pred_end = _baseline_tau(fA, fB, ef, Tmm)
+    predA, predB = _baseline_tau(fA, fB, 0.0, Tmm), _baseline_tau(fA, fB, 1.0, Tmm)
+    start_pure = abs(sf) < 1e-9 or abs(sf - 1) < 1e-9
+    end_pure = abs(ef) < 1e-9 or abs(ef - 1) < 1e-9
+    pfx = ("[%s] " % label) if label else ""
+
+    def _sample(path, mk):
+        return A._sample_cells_linear(layout, A._load_photo(path), 1600, 0.03,
+                                      manual_markers=_mk(mk))
+
+    def _orient(Tin, chans):
+        Tn = np.clip(np.asarray(Tin, float), 0, 1)
+        fwd = sum(abs(Tn[0, c] - pred_start[c]) + abs(Tn[-1, c] - pred_end[c])
+                  for c in chans)
+        rev = sum(abs(Tn[0, c] - pred_end[c]) + abs(Tn[-1, c] - pred_start[c])
+                  for c in chans)
+        return (Tn[::-1], True) if rev < fwd - 1e-9 else (Tn, False)
 
     def _orient_raw(raw, chans):
-        """Orient a RAW strip by matching its end-to-end log ratio to the predicted
-        ends -- exposure-invariant, so it works before the exposure is known."""
         r = np.clip(np.asarray(raw, float), 1e-6, None)
         lr = np.log(np.clip(pred_start, 1e-9, None) / np.clip(pred_end, 1e-9, None))
         fwd = sum(abs(np.log(r[0, c] / r[-1, c]) - lr[c]) for c in chans)
@@ -380,8 +372,6 @@ def run_fit(opts):
         return (r[::-1], True) if rev < fwd - 1e-9 else (r, False)
 
     def _norm_ends(raw, chans):
-        """Fix exposure per channel: incident light interpolates linearly between
-        end0 (raw/pred_start) and endN (raw/pred_end).  tau = raw / incident."""
         r = np.clip(np.asarray(raw, float), 0, None)
         out = r.copy()
         n = len(r)
@@ -390,155 +380,189 @@ def run_fit(opts):
             Ee = r[-1, c] / max(pred_end[c], 1e-6)
             for i in range(n):
                 t = i / (n - 1) if n > 1 else 0.0
-                out[i, c] = r[i, c] / max(Es * (1 - t) + Ee * t, 1e-9)
+                if start_pure and end_pure:
+                    inc = Es * (1 - t) + Ee * t        # both pure -> vignette fit
+                elif start_pure:
+                    inc = Es                           # uniform from the pure start
+                elif end_pure:
+                    inc = Ee                           # uniform from the pure end
+                else:
+                    inc = Es * (1 - t) + Ee * t        # neither pure (unreliable)
+                out[i, c] = r[i, c] / max(inc, 1e-9)
         return np.clip(out, 0, 1.5)
 
     def _screen(raw, chans):
-        """Orient + normalise one screen's ramp: endpoint-referenced for the
-        window-less strip, bare-screen-normalised (already) otherwise."""
         if no_windows:
             o, fl = _orient_raw(raw, chans)
             return _norm_ends(o, chans), fl
         return _orient(raw, chans)
 
-    # White measures all 3 channels; an optional colour screen re-measures ITS
-    # channel at high SNR (all the light in one channel) -- decisive for a PALE mix.
     flips, T = [], None
-    if opts.white:
-        T, fl = _screen(_sample(opts.white, _mk(opts.markers))[0], (0, 1, 2))
+    if photos.get("white"):
+        T, fl = _screen(_sample(photos["white"], markers.get("white"))[0], (0, 1, 2))
         if fl:
             flips.append("white")
     STRONG_A = 0.5
     for scr, ch in (("red", 0), ("green", 1), ("blue", 2)):
-        path = getattr(opts, scr, None)
+        path = photos.get(scr)
         if not path:
             continue
-        # A colour screen only helps where BOTH filaments WEAKLY absorb this channel.
-        # If EITHER strongly absorbs it, the colour-through-mix cell sits near the
-        # noise floor -> the ratio inflates (same metamerism as single-cal), so keep
-        # white (e.g. red's G/B).  Needs white to fall back to.
-        if opts.white and max(fA.a[ch], fB.a[ch]) >= STRONG_A:
+        if photos.get("white") and max(fA.a[ch], fB.a[ch]) >= STRONG_A:
             who = fA.name if fA.a[ch] >= fB.a[ch] else fB.name
-            print("NOTE: %s screen skipped for the %s channel -- %s strongly absorbs "
-                  "it (colour-through-mix reads near the floor); kept white."
-                  % (scr, "RGB"[ch], who))
+            print("%sNOTE: %s screen skipped for %s -- %s strongly absorbs it; kept "
+                  "white." % (pfx, scr, "RGB"[ch], who))
             continue
-        Tc, _, _, sat = _sample(path, _mk(getattr(opts, "markers_" + scr, None)))
-        if not no_windows and sat[ch] >= 0.95:        # near-clipped -> inflated ratio
-            print("NOTE: %s screen is over-exposed (ref %.2f, near clipping) -- its "
-                  "%s transmittance is inflated; kept white for that channel. "
-                  "Re-shoot it darker (watch the %s histogram)."
-                  % (scr, sat[ch], "RGB"[ch], "RGB"[ch]))
+        Tc, _, _, sat = _sample(path, markers.get(scr))
+        if not no_windows and sat[ch] >= 0.95:
+            print("%sNOTE: %s screen over-exposed (ref %.2f) -- kept white for %s."
+                  % (pfx, scr, sat[ch], "RGB"[ch]))
             continue
-        Tc, fl = _screen(Tc, (ch,))                   # orient + normalise by ITS channel
+        Tc, fl = _screen(Tc, (ch,))
         if fl:
             flips.append(scr)
         if T is None:
-            T = Tc.copy()                             # 3-colour: seed from a colour
+            T = Tc.copy()
         T[:, ch] = Tc[:, ch]
-        print("using %s screen for the %s channel (higher SNR)"
-              % (scr, "RGB"[ch]))
+        print("%susing %s screen for the %s channel (higher SNR)"
+              % (pfx, scr, "RGB"[ch]))
     if T is None:
-        raise SystemExit("error: no usable mixture photo -- pass --white and/or "
-                         "--red/--green/--blue")
+        raise SystemExit("error: pad '%s' has no usable photo (white and/or "
+                         "red/green/blue)" % label)
     if flips:
-        print("NOTE: flipped %s ramp(s) so cell0 = %s%% B end near pure %s (screens "
-              "shot at different rotations; A+B mixing is symmetric)."
-              % (", ".join(flips), int(round(sf * 100)), fA.name))
-    if no_windows:
-        print("NOTE: window-less strip -- exposure fixed from the two ends (the pure "
-              "ends equal the ironed single-cals), so the ends match by construction "
-              "and the endpoint check below is informational.")
+        print("%sNOTE: flipped %s ramp(s) so cell0 = %d%%B end (A+B mixing is "
+              "symmetric)." % (pfx, ", ".join(flips), int(round(sf * 100))))
+    if no_windows and not (start_pure or end_pure):
+        print("%sWARNING: neither end is pure A/B -- a window-less strip has no "
+              "scatter-free reference, so its exposure (hence sigma) is unreliable. "
+              "Include a pure 0%% or 100%% end." % pfx)
     T = np.clip(np.asarray(T, float), 0, 1)
-    # The mixture pad's PURE ends carry the same print-line artifact we IRON away for
-    # the single cals -- and those single cals are the clean truth for pad0/padN.  So
-    # if a measured end is off, ANCHOR it to the ironed single-cal (predA/predB) before
-    # fitting sigma: only the ramp MIDDLE (the real A+B mix) then drives sigma, and you
-    # don't have to iron+reprint the whole ramp.  --raw-ends keeps the measured ends.
+
+    # Anchor a PURE end to its ironed single-cal (scatter = 0 there); never anchor a
+    # non-pure end (it carries real scatter).  For the window-less strip the pure
+    # ends already equal the single-cals by construction (exposure normalisation).
     ENDPOINT_TOL = 10.0
     anchored = []
-    if not getattr(opts, "raw_ends", False):
-        for idx, pred, nm, pct in ((0, predA, fA.name, 0),
-                                   (-1, predB, fB.name, int(pads[-1]["pct_b"]))):
+    if not raw_ends:
+        for idx, pred, pure, nm, pct in (
+                (0, predA, abs(sf) < 1e-9, fA.name, int(pads[0]["pct_b"])),
+                (-1, predB, abs(ef - 1) < 1e-9, fB.name, int(pads[-1]["pct_b"]))):
+            if not pure:
+                continue
             e = delta_e(np.clip(T[idx], 0, 1), pred)
             if e > ENDPOINT_TOL:
                 T[idx] = pred
                 anchored.append((nm, pct, round(float(e), 1)))
     if anchored:
-        print("NOTE: pure end(s) deviate from the IRONED single-cal (mixture-pad line "
-              "artifact) -- anchored them to the single-cal; sigma fit from the middle:")
         for nm, pct, e in anchored:
-            print("   pad%d pure %s was off by dE %.1f -> using its single-cal value "
-                  "(reprint the ramp ironed for a fully clean fit)" % (pct, nm, e))
-    pair = {"A": fA.name, "B": fB.name,
-            "ratios": [p["pct_b"] / 100.0 for p in pads],
-            "tau": [[float(x) for x in T[i]] for i in range(len(pads))]}
+            print("%sNOTE: pure %s end was off by dE %.1f -> anchored to its "
+                  "single-cal." % (pfx, nm, e))
+    ratios = [p["pct_b"] / 100.0 for p in pads]
+    tau = [[float(x) for x in T[i]] for i in range(len(pads))]
+    return {"ratios": ratios, "tau": tau, "anchored": anchored, "label": label,
+            "sf": sf, "ef": ef}
+
+
+def run_fit(opts):
+    """Fit per-filament sigma from ONE or MORE printed mixture strips.
+
+    Multiple pads with different ranges/steps (e.g. a coarse 0..100% @20% plus a
+    fine 0..50% @10% to tune the first half) are combined into one joint fit: all
+    (ratio, tau) points feed the same least-squares, so denser coverage of a region
+    sharpens sigma there."""
+    import json
+    import os
+    from solve_recipe import load_filament, linear_to_hex, delta_e
+    fA = load_filament(opts.a.split("=")[0], opts.a.split("=", 1)[1])
+    fB = load_filament(opts.b.split("=")[0], opts.b.split("=", 1)[1])
+    if opts.out_dir is None:                          # natural: <root>/mix/<A>+<B>/
+        opts.out_dir = os.path.join(opts.cal_root, "mix",
+                                    "+".join(sorted((fA.name, fB.name))))
+
+    # Assemble the list of pad specs: either --pads-spec (a JSON with several pads)
+    # or the single-pad CLI args.  Each spec: {layout, white, red, green, blue,
+    # markers{screen: 'x,y;..' or [[x,y]*4]}}.
+    raw_ends = getattr(opts, "raw_ends", False)
+    if getattr(opts, "pads_spec", None):
+        spec = json.load(open(opts.pads_spec))
+        pad_specs = spec["pads"]
+        raw_ends = spec.get("raw_ends", raw_ends)
+    else:
+        pad_specs = [{"layout": opts.layout, "white": opts.white, "red": opts.red,
+                      "green": opts.green, "blue": opts.blue,
+                      "markers": {"white": opts.markers, "red": opts.markers_red,
+                                  "green": opts.markers_green,
+                                  "blue": opts.markers_blue}}]
+
+    Tmm = getattr(opts, "thickness", None)
+    measured = []
+    for i, ps in enumerate(pad_specs):
+        with open(ps["layout"]) as f:
+            layout = json.load(f)
+        if Tmm is None:
+            Tmm = layout["total_thickness_mm"]
+        elif abs(layout["total_thickness_mm"] - Tmm) > 1e-6 \
+                and not getattr(opts, "thickness", None):
+            print("WARNING: pad %d thickness %.2f != %.2f; using %.2f (all pads must "
+                  "share the light path)" % (i, layout["total_thickness_mm"], Tmm, Tmm))
+        lbl = ps.get("label") or ("%g-%g%%@%g" % (
+            layout.get("start_pct", layout["pads"][0]["pct_b"]),
+            layout.get("end_pct", layout["pads"][-1]["pct_b"]),
+            layout.get("ramp_step_pct", 0)))
+        photos = {k: ps.get(k) for k in ("white", "red", "green", "blue")}
+        markers = {k: ps.get("markers", {}).get(k) for k in
+                   ("white", "red", "green", "blue")}
+        measured.append(_measure_pad(layout, photos, markers, fA, fB, Tmm,
+                                     raw_ends=raw_ends, label=lbl))
+
+    # Combine every pad's (ratio, tau) into ONE pair -> joint least-squares.
+    all_ratios, all_tau, prov = [], [], []
+    for m in measured:
+        all_ratios += m["ratios"]
+        all_tau += m["tau"]
+        prov += [m["label"]] * len(m["ratios"])
+    pair = {"A": fA.name, "B": fB.name, "ratios": all_ratios, "tau": all_tau}
     sigma, direct = fit_sigma([pair], {fA.name: fA, fB.name: fB}, Tmm)
 
-    print("fitted per-filament sigma (per mm):")
+    print("fitted per-filament sigma (per mm) from %d pad(s), %d points:"
+          % (len(measured), len(all_ratios)))
     for n in (fA.name, fB.name):
         print("  %-8s %s" % (n, np.round(sigma[n], 3).tolist()))
-    print("\n  %%%-3s  measured   predicted  baseline   dE(model) dE(base)" % "B")
+    print("\n  %%%-3s  pad          measured   predicted  baseline   dE(mdl) dE(base)"
+          % "B")
+    order = sorted(range(len(all_ratios)), key=lambda k: all_ratios[k])
     des, bas, rows = [], [], []
-    for i, p in enumerate(pads):
-        r = p["pct_b"] / 100.0
-        meas = np.clip(T[i], 0, 1)
+    for k in order:
+        r = all_ratios[k]
+        meas = np.clip(np.asarray(all_tau[k], float), 0, 1)
         pred = mix_tau(fA, fB, sigma[fA.name], sigma[fB.name], r, Tmm)
         base = _baseline_tau(fA, fB, r, Tmm)
         de, db = delta_e(meas, pred), delta_e(meas, base)
         des.append(de)
         bas.append(db)
-        rows.append((int(p["pct_b"]), linear_to_hex(meas), linear_to_hex(pred),
+        rows.append((int(round(r * 100)), linear_to_hex(meas), linear_to_hex(pred),
                      linear_to_hex(base), de, db))
-        print("  %3.0f  #%-8s #%-8s #%-8s  %6.1f  %6.1f"
-              % (p["pct_b"], linear_to_hex(meas), linear_to_hex(pred),
+        print("  %3.0f  %-11s #%-8s #%-8s #%-8s  %5.1f  %5.1f"
+              % (r * 100, prov[k][:11], linear_to_hex(meas), linear_to_hex(pred),
                  linear_to_hex(base), de, db))
     print("\nmodel   mean dE %.2f / max %.2f" % (np.mean(des), np.max(des)))
-    print("baseline mean dE %.2f / max %.2f  (scatter off)" % (np.mean(bas), np.max(bas)))
+    print("baseline mean dE %.2f / max %.2f  (scatter off)"
+          % (np.mean(bas), np.max(bas)))
 
-    # The pure ends are ANCHORED to the single-filament cals (scatter = 0 at f=0,1).
-    # If a measured end doesn't match its single-cal, sigma can only bend the MIDDLE
-    # around a fixed endpoint error -> a non-monotonic curve and a meaningless sigma.
-    endA, endB = des[0], des[-1]
-    ENDPOINT_TOL = 10.0
-    endpoint_ok = endA <= ENDPOINT_TOL and endB <= ENDPOINT_TOL
-    if not endpoint_ok:
-        print("\n!! ENDPOINT MISMATCH -- sigma fit is UNRELIABLE (fix the ends first):")
-        if endA > ENDPOINT_TOL:
-            print("   pad0 pure %-10s measured #%s vs single-cal #%s  dE=%.1f"
-                  % (fA.name, linear_to_hex(np.clip(T[0], 0, 1)),
-                     linear_to_hex(predA), endA))
-        if endB > ENDPOINT_TOL:
-            print("   pad%-3d pure %-9s measured #%s vs single-cal #%s  dE=%.1f"
-                  % (int(pads[-1]["pct_b"]), fB.name,
-                     linear_to_hex(np.clip(T[-1], 0, 1)), linear_to_hex(predB), endB))
-        # Is it just the wrong THICKNESS?  If a pure end matches its single-cal far
-        # better at a different light path, the pad is thicker/thinner than recorded
-        # (that filament's cal is fine) -- suggest --thickness rather than a reshoot.
-        def _best_thk(ratio, meas):
-            best = (1e9, Tmm)
-            tt = 0.4
-            while tt <= 3.001:
-                d = delta_e(_baseline_tau(fA, fB, ratio, tt), np.clip(meas, 0, 1))
-                if d < best[0]:
-                    best = (d, round(tt, 1))
-                tt += 0.1
-            return best
-        for lbl, ratio, meas, ecur in ((fA.name, 0.0, T[0], endA),
-                                       (fB.name, 1.0, T[-1], endB)):
-            if ecur <= ENDPOINT_TOL:
-                continue
-            bd, bt = _best_thk(ratio, meas)
-            # only claim a thickness mismatch on a GENUINELY clean match elsewhere
-            # (a marginal improvement is just print/measurement noise, not thickness)
-            if bd < 5.0 and bd < ecur - 6 and abs(bt - Tmm) > 0.2:
-                print("   -> pure %s matches its single-cal at %.1f mm (dE %.1f), not "
-                      "the recorded %.1f mm: this pad is %s -- its cal is FINE, just "
-                      "set --thickness %.1f (no reshoot)."
-                      % (lbl, bt, bd, Tmm,
-                         "thicker" if bt > Tmm else "thinner", bt))
-        print("   Remaining mismatches are a real calibration/print issue: re-calibrate"
-              " that filament (ironed pad) and re-shoot before trusting sigma.")
+    # Endpoint sanity: check the pure 0%/100% points (if any pad measured them).
+    endpoint_ok = True
+    endpoint_de = {}
+    for target, pred, nm in ((0.0, _baseline_tau(fA, fB, 0.0, Tmm), fA.name),
+                             (1.0, _baseline_tau(fA, fB, 1.0, Tmm), fB.name)):
+        hits = [np.asarray(all_tau[k], float) for k in range(len(all_ratios))
+                if abs(all_ratios[k] - target) < 1e-6]
+        if not hits:
+            continue
+        e = float(np.mean([delta_e(np.clip(h, 0, 1), pred) for h in hits]))
+        endpoint_de[nm] = round(e, 2)
+        if e > 10.0:
+            endpoint_ok = False
+            print("!! pure %s (%.0f%%B) measured dE %.1f vs single-cal -- fit "
+                  "unreliable; re-calibrate/re-shoot that end." % (nm, target * 100, e))
 
     os.makedirs(opts.out_dir, exist_ok=True)
     _draw_mix_swatches(fA.name, fB.name, rows,
@@ -546,12 +570,13 @@ def run_fit(opts):
     with open(os.path.join(opts.out_dir, "mixture_calibration.json"), "w") as f:
         json.dump({"filaments": [fA.name, fB.name], "thickness_mm": Tmm,
                    "sigma": {n: [float(x) for x in sigma[n]] for n in sigma},
-                   "endpoint_de": {fA.name: round(float(endA), 2),
-                                   fB.name: round(float(endB), 2)},
-                   "endpoint_ok": bool(endpoint_ok),
-                   "ends_anchored": [{"filament": nm, "pct_b": pct, "raw_de": e}
-                                     for nm, pct, e in anchored],
-                   "measured_tau": pair["tau"], "ratios": pair["ratios"]}, f, indent=2)
+                   "endpoint_de": endpoint_de, "endpoint_ok": bool(endpoint_ok),
+                   "n_pads": len(measured),
+                   "pads": [{"label": m["label"], "ratios": m["ratios"],
+                             "anchored": [{"filament": nm, "pct_b": pct, "raw_de": e}
+                                          for nm, pct, e in m["anchored"]]}
+                            for m in measured],
+                   "measured_tau": all_tau, "ratios": all_ratios}, f, indent=2)
     print("\nwrote %s/mixture_calibration.json" % opts.out_dir)
     return 0
 
@@ -562,8 +587,12 @@ def main(argv=None):
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("selftest", help="synthetic sigma-recovery + A-C generalization")
     ft = sub.add_parser("fit", help="fit sigma from a printed mixture-ramp photo")
-    ft.add_argument("--layout", required=True, help="mixture pad layout.json")
-    ft.add_argument("--white", required=True, help="photo over the white screen")
+    ft.add_argument("--layout", help="mixture pad layout.json (single-pad mode)")
+    ft.add_argument("--white", help="photo over the white screen (single-pad mode)")
+    ft.add_argument("--pads-spec", help="JSON describing SEVERAL pads to combine into "
+                    "one joint sigma fit (different ranges/steps): {\"pads\":[{layout,"
+                    "white,red,green,blue,markers:{screen:[[x,y]*4]}}, ...]}. Overrides "
+                    "the single-pad --layout/--white args")
     ft.add_argument("--a", required=True, help="A filament: name=calibration.json")
     ft.add_argument("--b", required=True, help="B filament: name=calibration.json")
     ft.add_argument("--cal-root", default="filament/calibration",
@@ -591,6 +620,8 @@ def main(argv=None):
     if opts.cmd == "selftest":
         return run_selftest()
     if opts.cmd == "fit":
+        if not opts.pads_spec and not (opts.layout and opts.white):
+            raise SystemExit("error: pass --pads-spec, or both --layout and --white")
         return run_fit(opts)
 
 

@@ -347,47 +347,78 @@ def do_loadmix(data):
 
 
 def do_mixfit(data):
+    """Fit sigma from ONE or MORE printed strips (different ranges/steps) combined.
+
+    ``data.pads`` is a list of {start, end, step, files{screen:{b64,filename}},
+    markers{screen:[[x,y]*4]}}; the strip's layout is rebuilt from its params so no
+    saved layout.json is needed.  Falls back to a single pad for the old payload."""
+    import types
+    import make_mixture_pad as MP
     a, b = (data.get("a") or "").strip(), (data.get("b") or "").strip()
     if not a or not b or a == b:
         return {"ok": False, "stderr": "pick two DIFFERENT calibrated filaments "
                                        "请选择两种不同的已校准耗材"}
-    files = data.get("files") or {}
-    if not files.get("white"):                        # back-compat: single 'file'
-        if data.get("file"):
-            files = {"white": data["file"]}
-        else:
-            return {"ok": False, "stderr": "pick the mixture-pad WHITE photo "
-                                           "请选择混色标定板的白屏照片"}
+    pads_in = data.get("pads")
+    if not pads_in:                                   # back-compat: single-pad payload
+        files = data.get("files") or (
+            {"white": data["file"]} if data.get("file") else {})
+        pads_in = [{"start": data.get("start", 0), "end": data.get("end", 100),
+                    "step": data.get("step", 20), "files": files,
+                    "markers": data.get("markers") or {}}]
+    thk = (str(data.get("thickness") or "")).strip()
+    depth = float(thk) if thk else 1.0
+    cw = float(data.get("cell_w") or 10)
+    ch = float(data.get("cell_h") or 20)
     stage = os.path.join(UPLOADS, "mix_%s_%s" % (a, b))
     os.makedirs(os.path.join(ROOT, stage), exist_ok=True)
-    args = ["python3", "filament/mixture.py", "fit", "--layout", MIX_LAYOUT,
+
+    spec_pads = []
+    for i, pad in enumerate(pads_in):
+        ns = types.SimpleNamespace(
+            start=float(pad.get("start") or 0), end=float(pad.get("end") or 100),
+            ramp_step=float(pad.get("step") or 20), cell_w=cw, cell_h=ch,
+            depth_mm=depth)
+        try:
+            layout, _ = MP.build_layout(ns)
+        except SystemExit as e:
+            return {"ok": False, "stderr": "strip %d: %s" % (i + 1, e)}
+        lp = os.path.join(stage, "layout_%d.json" % i)
+        with open(os.path.join(ROOT, lp), "w") as fh:
+            json.dump(layout, fh)
+        entry = {"layout": lp, "markers": {},
+                 "label": "%g-%g%%@%g" % (ns.start, ns.end, ns.ramp_step)}
+        files = pad.get("files") or {}
+        mk = pad.get("markers") or {}
+        for scr in ("white", "red", "green", "blue"):
+            fobj = files.get(scr)
+            if fobj:
+                ext = os.path.splitext(fobj.get("filename", ""))[1] or ".dng"
+                rel = os.path.join(stage, "p%d_%s%s" % (i, scr, ext))
+                with open(os.path.join(ROOT, rel), "wb") as fh:
+                    fh.write(base64.b64decode(fobj["b64"].split(",")[-1]))
+                entry[scr] = rel
+            pts = mk.get(scr)
+            if pts and len(pts) == 4:
+                entry["markers"][scr] = pts
+        if not any(entry.get(s) for s in ("white", "red", "green", "blue")):
+            return {"ok": False, "stderr": "strip %d has no photo -- add a white "
+                                           "(and/or colour) shot 第%d条缺少照片"
+                                           % (i + 1, i + 1)}
+        spec_pads.append(entry)
+
+    specp = os.path.join(stage, "spec.json")
+    with open(os.path.join(ROOT, specp), "w") as fh:
+        json.dump({"pads": spec_pads}, fh)
+    args = ["python3", "filament/mixture.py", "fit", "--pads-spec", specp,
             "--cal-root", CALROOT,
             "--a", "%s=%s/%s/calibration.json" % (a, CALROOT, a),
             "--b", "%s=%s/%s/calibration.json" % (b, CALROOT, b)]
-    for scr in ("white", "red", "green", "blue"):
-        fobj = files.get(scr)
-        if not fobj:
-            continue
-        ext = os.path.splitext(fobj.get("filename", ""))[1] or ".dng"
-        rel = os.path.join(stage, scr + ext)
-        with open(os.path.join(ROOT, rel), "wb") as fh:
-            fh.write(base64.b64decode(fobj["b64"].split(",")[-1]))
-        args += ["--" + scr, rel]
-    mk = data.get("markers") or {}
-    if isinstance(mk, list):                          # back-compat: bare list = white
-        mk = {"white": mk}
-    for scr in ("white", "red", "green", "blue"):
-        pts = mk.get(scr)
-        if pts and len(pts) == 4:
-            flag = "--markers" if scr == "white" else "--markers-" + scr
-            args += [flag, ";".join("%.1f,%.1f" % (p[0], p[1]) for p in pts)]
-    thk = (data.get("thickness") or "").strip()
     if thk:
         args += ["--thickness", thk]
     rc, out, err = sh(args)
     pair = "+".join(sorted((a, b)))
     res = {"ok": rc == 0, "cmd": " ".join(args), "stdout": out, "stderr": err,
-           "pair": pair}
+           "pair": pair, "n_pads": len(spec_pads)}
     p = "%s/mix/%s/mixture_fit.png" % (CALROOT, pair)
     if os.path.isfile(os.path.join(ROOT, p)):
         res["images"] = [p]
@@ -564,25 +595,16 @@ PAGE = """<!doctype html><html><head><meta charset=utf-8>
   <div class=row><button class=go onclick="genMixPad()">Generate 3MF 生成</button> <span id=mp_status></span></div>
   <div id=mp_result></div>
  </fieldset>
- <fieldset><legend>② Calibrate a 2-colour mixture&nbsp;·&nbsp;校准双色混合</legend>
+ <fieldset><legend>② Calibrate a 2-colour mixture&nbsp;·&nbsp;校准双色混合 <span style="font-weight:400;color:#777;font-size:12px">— combine one or more strips 可合并多条渐变条</span></legend>
   <div class=row><label>A (slot 1)</label><select id=mx_a></select>
     <label style="min-width:90px">B (slot 2)</label><select id=mx_b></select>
     <button onclick="loadFils()" style="margin-left:8px">↻ refresh 刷新</button></div>
-  <div class=row><label>white 白 *</label><input type=file id=mx_file accept="image/*,.dng,.arw,.cr2,.nef,.raf"> <span style="color:#777;font-size:12px">mixture-pad photo over white 混色板白屏照片</span></div>
-  <div class=row><label>red 红</label><input type=file id=mx_red accept="image/*,.dng,.arw,.cr2,.nef,.raf"><span style="color:#888;font-size:12px;margin-left:8px">try ISO 160 · 1/40s 起始参考</span></div>
-  <div class=row><label>green 绿</label><input type=file id=mx_green accept="image/*,.dng,.arw,.cr2,.nef,.raf"><span style="color:#888;font-size:12px;margin-left:8px">try ISO 100 · 1/30s 起始参考</span></div>
-  <div class=row><label>blue 蓝</label><input type=file id=mx_blue accept="image/*,.dng,.arw,.cr2,.nef,.raf"><span style="color:#888;font-size:12px;margin-left:8px">try ISO 125 · 1/40s · max brightness 最大亮度</span></div>
-  <div class=row style="color:#888;font-size:12px">White alone is fine. Add the colour screen(s) to sharpen a <b>pale</b> mixture's hue — each re-measures its channel at higher SNR. Expose by the <b>lit channel's</b> R/G/B histogram (~85%), not luma.<br>只需白屏即可。<b>淡色</b>混合可另加彩色背光以校正色相——各屏高信噪比地重测对应通道。依据<b>被点亮通道</b>的 R/G/B 直方图（约 85%）曝光，而非亮度。</div>
-  <div class=row style="color:#777;font-size:12px">◈ Manual corner markers per screen (if a colour backlight washes out the black corners) · 逐屏手动标记角点（彩色背光冲淡黑角标时）</div>
-  <div class=row>
-    <button onclick="pickMarkers('mix_white','mx_file','mx_mk_area')">◈ white 白</button>
-    <button onclick="pickMarkers('mix_red','mx_red','mx_mk_area')">◈ red 红</button>
-    <button onclick="pickMarkers('mix_green','mx_green','mx_mk_area')">◈ green 绿</button>
-    <button onclick="pickMarkers('mix_blue','mx_blue','mx_mk_area')">◈ blue 蓝</button>
-  </div>
-  <div id=mx_mk_area></div>
-  <div class=row><label>thickness 厚度 (mm)</label><input type=number id=mx_thk step=0.1 style="width:80px" placeholder="auto">
-    <span style="color:#888;font-size:12px;margin-left:8px">override pad light path; leave blank for the pad default (the endpoint check suggests a value) 覆盖标定板厚度；留空用默认（端点检查会给出建议）</span></div>
+  <div class=row><label>thickness 厚度</label><input type=number id=mx_thk value=1.0 step=0.1 style="width:70px"> mm
+    &nbsp; cell 单元 <input type=number id=mx_cw value=10 step=1 style="width:50px"> × <input type=number id=mx_ch value=20 step=1 style="width:50px"> mm
+    <span style="color:#888;font-size:12px;margin-left:6px">shared — must match what you printed 与打印参数一致</span></div>
+  <div class=row style="color:#888;font-size:12px">Add a strip per printed pad. Combine e.g. a coarse <b>0–100%@20%</b> with a fine <b>0–50%@10%</b> to sharpen the first half — all points feed ONE joint σ fit. Each strip needs its own white (and optional colour) photo + 4 hand-picked corners. Expose by the <b>lit channel's</b> histogram (~85%), not luma.<br>每条对应一块打印板。可合并如粗略 <b>0–100%@20%</b> 与精细 <b>0–50%@10%</b> 来细调前半段——所有点联合拟合 σ。每条需各自白屏（及可选彩色）照片和手动 4 角点。依据<b>被点亮通道</b>直方图（约 85%）曝光。</div>
+  <div id=mx_pads></div>
+  <div class=row><button onclick="addPad()">＋ Add strip 添加渐变条</button></div>
   <div class=row><button class=go id=mx_go onclick="mixfit()">Fit σ 拟合</button> <span id=mx_status></span></div>
  </fieldset>
  <fieldset><legend>③ View a calibrated mixture&nbsp;·&nbsp;查看已校准混色</legend>
@@ -774,27 +796,42 @@ async function loadFils(){const r=await post('/filaments',{});const fs=r.filamen
  if(fs.length>1&&document.getElementById('mx_b').selectedIndex==document.getElementById('mx_a').selectedIndex)document.getElementById('mx_b').selectedIndex=1;
  const rm=await post('/mixtures',{});const ms=rm.mixtures||[];const mv=document.getElementById('mv_pair');
  if(mv){const cur=mv.value;mv.innerHTML=ms.map(m=>'<option'+(m==cur?' selected':'')+'>'+m+'</option>').join('');}}
+let MXN=0;
+function renumber(){const ps=document.querySelectorAll('.mxpad');ps.forEach((el,i)=>{el.querySelector('.mxnum').textContent=i+1;});}
+function delPad(k){const el=document.getElementById('mxpad_'+k);if(el)el.remove();renumber();}
+function addPad(){const k=MXN++;const acc="image/*,.dng,.arw,.cr2,.nef,.raf";
+ const defs=MXN===1?[0,100,20]:[0,50,10];
+ const fu=(s,lb)=>`${lb} <input type=file id="mxp_${k}_${s}" accept="${acc}"><button onclick="pickMarkers('mix${k}_${s}','mxp_${k}_${s}','mxp_${k}_mk')" title="pick 4 corners">◈</button>`;
+ const div=document.createElement('div');
+ div.innerHTML=`<fieldset class=mxpad id="mxpad_${k}" style="border:1px dashed #bbc;margin:6px 0;padding:6px">
+  <legend>Strip <span class=mxnum></span> <button onclick="delPad(${k})" style="color:#b00;font-size:11px;margin-left:6px">✕</button></legend>
+  <div class=row>range 范围 <input type=number id="mxp_${k}_start" value="${defs[0]}" min=0 max=100 style="width:52px"> → <input type=number id="mxp_${k}_end" value="${defs[1]}" min=0 max=100 style="width:52px"> %B &nbsp; step 步进 <input type=number id="mxp_${k}_step" value="${defs[2]}" style="width:52px"> %B</div>
+  <div class=row style="flex-wrap:wrap">${fu('white','white 白*')} &nbsp; ${fu('red','red 红')} &nbsp; ${fu('green','green 绿')} &nbsp; ${fu('blue','blue 蓝')}</div>
+  <div id="mxp_${k}_mk"></div></fieldset>`;
+ document.getElementById('mx_pads').appendChild(div.firstElementChild);renumber();}
 async function mixfit(){const btn=document.getElementById('mx_go');btn.disabled=true;
+ const gv=id=>document.getElementById(id).value;
  document.getElementById('mx_status').textContent='running…';
  document.getElementById('mx_result').innerHTML='';document.getElementById('mx_cmd').innerHTML='';
- const files={};
- for(const s of ['white','red','green','blue']){const id=s==='white'?'mx_file':'mx_'+s;const el=document.getElementById(id);if(el&&el.files[0])files[s]=await f2b64(el.files[0]);}
- const markers={white:mkFor('mix_white'),red:mkFor('mix_red'),green:mkFor('mix_green'),blue:mkFor('mix_blue')};
- const res=await post('/mixfit',{a:document.getElementById('mx_a').value,b:document.getElementById('mx_b').value,thickness:document.getElementById('mx_thk').value,files,markers});
+ const pads=[];
+ for(const el of document.querySelectorAll('.mxpad')){const k=el.id.split('_')[1];
+   const files={};
+   for(const s of ['white','red','green','blue']){const fe=document.getElementById('mxp_'+k+'_'+s);if(fe&&fe.files[0])files[s]=await f2b64(fe.files[0]);}
+   const markers={white:mkFor('mix'+k+'_white'),red:mkFor('mix'+k+'_red'),green:mkFor('mix'+k+'_green'),blue:mkFor('mix'+k+'_blue')};
+   pads.push({start:gv('mxp_'+k+'_start'),end:gv('mxp_'+k+'_end'),step:gv('mxp_'+k+'_step'),files,markers});}
+ if(!pads.length){alert('add at least one strip 请先添加一条渐变条');btn.disabled=false;document.getElementById('mx_status').textContent='';return;}
+ const res=await post('/mixfit',{a:document.getElementById('mx_a').value,b:document.getElementById('mx_b').value,thickness:gv('mx_thk'),cell_w:gv('mx_cw'),cell_h:gv('mx_ch'),pads});
  btn.disabled=false;document.getElementById('mx_status').textContent='';
  if(res.cmd)document.getElementById('mx_cmd').innerHTML='<div class=cmd>'+res.cmd+'</div>';
  let h='';
  if(!res.ok){h+='<div class=warn><b>failed 失败:</b><br><pre class=out>'+(res.stderr||'')+'</pre></div>';}
- else{h+='<div class=done>✓ σ fitted · σ 拟合完成 &nbsp;→ filament/calibration/mix/'+res.pair+'/</div>';
-   // pull the model vs baseline dE summary lines
+ else{h+='<div class=done>✓ σ fitted · σ 拟合完成 &nbsp;('+(res.n_pads||1)+' strip'+((res.n_pads||1)>1?'s':'')+' combined 条合并) &nbsp;→ filament/calibration/mix/'+res.pair+'/</div>';
    const t=res.stdout||'',m=t.match(/model.*dE.*/i),b=t.match(/baseline.*dE.*/i);
    if(m||b)h+='<div class=ok>'+[m,b].filter(Boolean).map(x=>x[0]).join('<br>')+'<br><span style="color:#555">lower model ΔE = better; the pair is now a direct posterior in the LUT. 模型 ΔE 越低越好，该组合已作为直接后验进入查找表。</span></div>';
-   const lines=t.split('\\n'),ei=lines.findIndex(l=>l.indexOf('ENDPOINT MISMATCH')>=0);
-   if(ei>=0){const blk=[];for(let i=ei;i<lines.length;i++){if(i>ei&&(lines[i].trim()===''||lines[i].indexOf('wrote')===0))break;blk.push(lines[i]);}
-     h+='<div class=warn><b>⚠ Endpoint mismatch 端点不匹配</b><pre class=out>'+blk.join('\\n')+'</pre><span style="color:#555">The ramp ends disagree with the single-filament cals, so σ is unreliable. Re-calibrate the flagged filament(s) and reshoot on the same pad. 渐变端点与单色校准不符，σ 不可靠——请重新校准被标记的耗材并在同一板上重拍。</span></div>';}
-   const ai=lines.findIndex(l=>l.indexOf('anchored them to the single-cal')>=0);
-   if(ai>=0){const blk=[];for(let i=ai;i<lines.length;i++){if(i>ai&&(lines[i].trim()===''||lines[i].indexOf('wrote')===0||lines[i].indexOf('model')===0))break;blk.push(lines[i]);}
-     h+='<div class=info><b>⚓ Ends anchored to ironed single-cals 端点已锚定到熨烫单色校准</b><pre class=out>'+blk.join('\\n')+'</pre><span style="color:#555">The pure ends had mixture-pad line artifacts, so they were replaced with the ironed single-cal values; σ was fit from the ramp middle. Reprint the ramp ironed for a fully clean fit. 纯色端点有打印纹理伪影，已用熨烫单色校准值替代，σ 由渐变中段拟合；如需完全干净可熨烫重打渐变板。</span></div>';}
+   if(t.indexOf('fit unreliable')>=0||t.indexOf('WARNING: neither end')>=0)
+     h+='<div class=warn><b>⚠ σ may be unreliable σ 可能不可靠</b><br><span style="color:#555">A pure 0%/100% end mismatched its single-cal, or a strip had no pure end. Include a pure end and re-calibrate/re-shoot the flagged filament. See the raw log. 某纯色端与单色校准不符，或某条渐变缺少纯色端；请包含纯色端并重校/重拍，详见下方日志。</span></div>';
+   if(t.indexOf('anchored to its single-cal')>=0)
+     h+='<div class=info><b>⚓ Pure end(s) anchored to the ironed single-cals 纯色端已锚定到熨烫单色校准</b><br><span style="color:#555">A pure end had a mixture-pad line artifact and was replaced with its ironed single-cal value; σ fit from the rest. 纯色端有打印纹理伪影，已用熨烫单色校准值替代。</span></div>';
    if(res.images)res.images.forEach(p=>h+=img(p));
    h+='<details><summary>raw table 原始数据</summary><pre class=out>'+t+'</pre></details>';}
  document.getElementById('mx_result').innerHTML=h;}
@@ -815,6 +852,7 @@ async function matchHex(){const hx=document.getElementById('l_hex').value.trim()
    '<span class=sw style="background:#'+m2[2]+'"></span> target #'+m2[1]+' → #'+m2[2]+' &nbsp; ΔE '+m2[3]+' &nbsp; <b>'+m2[4]+'</b></div>';}
  document.getElementById('l_match').innerHTML=h||'<pre class=out>'+txt+'</pre>';}
 loadFils();   // populate mixture dropdowns on load
+addPad();     // start with one mixture strip
 </script></body></html>"""
 
 
