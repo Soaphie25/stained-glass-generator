@@ -154,6 +154,20 @@ each mix as its integer **sub-layer count** (e.g. `blue 20% / red 80% [1:4]`, `2
 for two-thirds). An intense filament's cap trims this further (blue ≤35% → only
 10/20/25/30/33% remain), so the whole recipe space is a small, printable set.
 
+### Export a printable-colour palette — paint from what will actually print
+
+In the GUI's **Colour LUT** tab, pick the filaments you'll load, then **Export
+reachable colours**: it builds the LUT for that set and writes every printable
+colour as a palette you can import into your art app, so you design *only* in
+colours the panel can reproduce (no out-of-gamut surprises):
+
+- `palette.gpl` — GIMP / Krita / Inkscape / Aseprite
+- `palette.aco` — Adobe Photoshop (v1 + named-v2 blocks)
+- `palette.png` — a labelled swatch sheet
+
+Colours are de-duplicated by predicted hex; an optional **max colours** caps the
+set to the N most perceptually-distinct printable swatches (Lab k-means).
+
 ## Sub-layer colour mixing (experimental, Bambu Studio Color Mixing)
 
 An alternative to stacking whole-layer blocks: within one solid part, Bambu Studio
@@ -300,9 +314,11 @@ python3 filament/mixture.py selftest
 - [x] **Assemble the panel** (`svg_to_3mf.py`): SVG panes → LUT → per-pane recipe →
       one Bambu color-mix 3MF, with tiered 1/2/3-mix thresholds, direct-approx
       (σ=0) fallback, and the leading embedded as an editable `BambuStudioShape`
-- [x] **Two browser GUIs**: `filament/gui.py` (calibrate/map/lut, σ preview slider,
-      hue/sat/bright tuning) and `glass_gui.py` (image → panes → printable 3MF);
-      both bilingual (EN + 简体中文), showing the CLI command + live previews
+- [x] **Two browser GUIs**: `filament/gui.py` (3 tabs — Calibrate / Mixture /
+      Colour LUT with a filament picker, σ preview slider, hue/sat/bright tuning, and
+      **reachable-colour palette export** to .gpl/.aco/PNG) and `glass_gui.py`
+      (image → panes → printable 3MF); both bilingual (EN + 简体中文), showing the
+      CLI command + live previews
 - [ ] Upgrade Delta-E CIE76 → CIEDE2000
 
 ## Folder layout & workflow
