@@ -1,5 +1,7 @@
 # Filament calibration & mixing (transparent filaments)
 
+**English** | [简体中文](读我.md)
+
 Tools for picking transparent-filament print recipes (which filament + how thick)
 to hit each stained-glass pane's target colour. Transparent filaments have no
 standard CMYW set and slicer colour-mix previews are inaccurate versus the real
