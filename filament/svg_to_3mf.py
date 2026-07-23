@@ -487,9 +487,39 @@ def _print_table(m):
           % (len(rows), ngam, m["max_delta"]))
 
 
+def _leading_mesh(leading_svg, scale, H, z0, z1):
+    """Read the came SVG (stroked polylines), buffer each stroke to a ribbon, union,
+    and extrude the result to a mesh raised z0..z1 -- so the leading sits ON TOP of
+    the panes, exactly on the shared seams."""
+    from shapely.geometry import LineString
+    from shapely.ops import unary_union
+    strokes = _read_leading(leading_svg)
+    ribbons = []
+    for pts, w in strokes:
+        if len(pts) < 2:
+            continue
+        ls = LineString([(x * scale, y * scale) for x, y in pts])
+        ribbons.append(ls.buffer(max(w * scale / 2.0, 1e-3),
+                                 cap_style=1, join_style=1))
+    if not ribbons:
+        return None
+    u = unary_union(ribbons)
+    polys = list(u.geoms) if u.geom_type == "MultiPolygon" else [u]
+    rings = []
+    for g in polys:
+        if g.is_empty:
+            continue
+        rings.append(np.asarray(g.exterior.coords, float))
+        rings += [np.asarray(it.coords, float) for it in g.interiors]
+    if not rings:
+        return None
+    return extrude(rings, z0, z1, flip_h=H)
+
+
 def build_3mf(frag_dir, cal_root, out_path, thickness=1.6, max_delta=20.0,
               num_colors=None, bed_mm=256.0, max_size_mm=None, filaments=None,
-              no_sigma=False, max_delta_2=None):
+              no_sigma=False, max_delta_2=None, leading_svg=None,
+              lead_height_mm=0.6):
     from bambu_mix3mf import write_bambu_color_mix_3mf, default_template
     m = map_recipes(frag_dir, cal_root, thickness, max_delta, num_colors,
                     max_size_mm, filaments, no_sigma=no_sigma, max_delta_2=max_delta_2)
@@ -519,10 +549,28 @@ def build_3mf(frag_dir, cal_root, out_path, thickness=1.6, max_delta=20.0,
     if cb:
         parts.append({"name": "markers", "boxes": cb, "slot": black_slot})
 
+    extra_files = None
+    if leading_svg and os.path.isfile(leading_svg):   # embed the leading (came)
+        lm = _leading_mesh(leading_svg, scale, H, thickness,
+                           thickness + lead_height_mm)
+        if lm and lm[1]:
+            parts.append({"name": "leading", "mesh": lm, "slot": black_slot,
+                          "svg_shape": {"name": "leading.svg",
+                                        "path3mf": "3D/leading.svg",
+                                        "depth": lead_height_mm, "z": thickness,
+                                        "scale": scale}})
+            extra_files = {"3D/leading.svg": open(leading_svg, "rb").read()}
+            print("embedded leading: %d faces, %.1f mm proud of the panes"
+                  % (len(lm[1]), lead_height_mm))
+        else:
+            print("note: leading SVG had no strokes to embed")
+
     bases = [{"colour": "#" + SR.linear_to_hex(SR.predict_linear([fl], [thickness]))}
              for fl in pool] + [{"colour": "#111111"}]
-    write_bambu_color_mix_3mf(out_path, default_template(), bases, parts, bed_mm)
-    render_preview(m, os.path.splitext(out_path)[0] + "_preview.png")
+    write_bambu_color_mix_3mf(out_path, default_template(), bases, parts, bed_mm,
+                              extra_files=extra_files)
+    render_preview(m, os.path.splitext(out_path)[0] + "_preview.png",
+                   leading_svg=leading_svg)
     _print_table(m)
     print("\n-> %s (+ _preview.png)" % out_path)
     return 0
@@ -594,6 +642,11 @@ def main(argv=None):
                    help="DIRECT APPROXIMATION: predict mixes from the single cals "
                         "only (scatter off) -- no mixture calibration needed, "
                         "slightly off but the pipeline still works")
+    p.add_argument("--leading", help="embed this came/leading SVG as a raised part "
+                   "on top of the panes (Bambu editable-SVG shape)")
+    p.add_argument("--lead-height", type=float, default=0.6,
+                   help="how far the embedded leading stands proud of the panes, mm "
+                        "(default 0.6)")
     p.add_argument("--selftest", action="store_true", help="geometry self-test")
     opts = p.parse_args(argv)
     if opts.selftest or not opts.frag_dir:
@@ -601,7 +654,8 @@ def main(argv=None):
     return build_3mf(opts.frag_dir, opts.cal_root, opts.out, opts.thickness,
                      opts.max_delta, opts.num_colors, max_size_mm=opts.max_size_mm,
                      filaments=opts.filaments, no_sigma=opts.no_sigma,
-                     max_delta_2=opts.max_delta_2)
+                     max_delta_2=opts.max_delta_2, leading_svg=opts.leading,
+                     lead_height_mm=opts.lead_height)
 
 
 if __name__ == "__main__":

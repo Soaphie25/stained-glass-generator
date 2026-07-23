@@ -187,6 +187,8 @@ def do_gen3mf(data):
     except SystemExit as e:
         return {"ok": False, "stderr": str(e)}
     out = os.path.join(WORK, "panel.3mf")
+    lead = os.path.join(ROOT, WORK, "leading.svg")
+    embed_lead = bool(data.get("leading")) and os.path.isfile(lead)
     import svg_to_3mf as V2
     V2.build_3mf(os.path.join(WORK, "frag"), CALROOT, os.path.join(ROOT, out),
                  thickness=float(data.get("depth") or 1.6),
@@ -196,7 +198,9 @@ def do_gen3mf(data):
                  filaments=(data.get("filaments") or None),
                  no_sigma=bool(data.get("no_sigma")),
                  max_delta_2=(float(data["max_delta_2"])
-                              if data.get("max_delta_2") else None))
+                              if data.get("max_delta_2") else None),
+                 leading_svg=(lead if embed_lead else None),
+                 lead_height_mm=float(data.get("lead_height") or 0.6))
     return {"ok": True, "download": out, "image": os.path.join(WORK, "panel_preview.png"),
             "table": _table(m), "dims": [round(m["W"]), round(m["H"])]}
 
@@ -300,6 +304,8 @@ PAGE = r"""<!doctype html><html><head><meta charset=utf-8>
 </fieldset>
 
 <fieldset><legend>④ Generate 3MF&nbsp;·&nbsp;生成 3MF</legend>
+ <div class=row style="font-size:13px"><label><input type=checkbox id=o_leading> Embed leading 嵌入描边 (came) — a raised editable-SVG part on top of the panes, on the black slot · 在面板上方嵌入可编辑的描边 SVG（黑色槽）</label>
+   &nbsp; height 高 <input type=number id=o_leadh value=0.6 step=0.1 style="width:56px"> mm</div>
  <div class=row><button class=go onclick="gen()">Generate 生成 3MF</button> <span id=g_status></span></div>
  <div id=g_result></div>
 </fieldset>
@@ -323,7 +329,7 @@ function svgOpts(){const m=$('o_leadmode').value;
  return o;}
 function svgFlags(){return {'smooth-curves':$('o_smooth').checked,'merge-leading':$('o_mergelead').checked};}
 let ALLFIL=[], SEL=[], SLOTS=4, CONVERTED=false;
-function params(){return {depth:$('o_depth').value,size:$('o_size').value,colors:$('o_colors').value,max_delta:$('o_maxdelta').value,max_delta_2:$('o_maxdelta2').value,filaments:SEL,no_sigma:$('o_nosigma').checked};}
+function params(){return {depth:$('o_depth').value,size:$('o_size').value,colors:$('o_colors').value,max_delta:$('o_maxdelta').value,max_delta_2:$('o_maxdelta2').value,filaments:SEL,no_sigma:$('o_nosigma').checked,leading:$('o_leading').checked,lead_height:$('o_leadh').value};}
 async function lut(){const r=await post('/lutstatus',{});
  if(!r.ready){$('lut').innerHTML='<div class=warn><b>No calibrated filaments yet · 尚无已校准耗材</b><br>Calibrate filaments first: run <code>python3 filament/gui.py</code> · 请先用耗材 GUI 校准：运行 <code>python3 filament/gui.py</code></div>';return;}
  ALLFIL=r.filaments; if(SEL.length===0)SEL=ALLFIL.slice(0,Math.min(SLOTS,ALLFIL.length));

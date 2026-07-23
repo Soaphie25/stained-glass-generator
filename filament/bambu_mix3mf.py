@@ -121,8 +121,13 @@ def _extend_config(template_cfg, bases, mixes):
     return cfg
 
 
-def write_bambu_color_mix_3mf(out_path, template_3mf, bases, parts, bed_mm=256.0):
-    """See module docstring.  Returns a summary dict."""
+def write_bambu_color_mix_3mf(out_path, template_3mf, bases, parts, bed_mm=256.0,
+                              extra_files=None):
+    """See module docstring.  Returns a summary dict.
+
+    ``extra_files``: {archive_path: bytes} merged into the package (e.g. an embedded
+    leading SVG at ``3D/leading.svg``).  A part may carry ``svg_shape`` = {depth,
+    z} to tag it as a Bambu editable-SVG shape pointing at ``svg_path3mf``."""
     with zipfile.ZipFile(template_3mf) as z:
         tpl = {n: z.read(n) for n in z.namelist()}
     template_cfg = json.loads(tpl["Metadata/project_settings.config"])
@@ -161,14 +166,24 @@ def write_bambu_color_mix_3mf(out_path, template_3mf, bases, parts, bed_mm=256.0
         comps.append('<component p:path="/3D/Objects/object_1.model" objectid="%d" '
                      'p:UUID="%s" transform="1 0 0 0 1 0 0 0 1 0 0 0"/>'
                      % (k, _uuid("comp%d" % k)))
+        shape = ""
+        if part.get("svg_shape"):
+            sh = part["svg_shape"]
+            # editable-SVG tag (Bambu re-extrudes the SVG on edit; the mesh above is
+            # the authored geometry and is what displays/prints).  scale=1: our SVG
+            # is already in mm; z raises the extrusion onto the panes.
+            shape = ('   <BambuStudioShape filepath="%s" filepath3mf="%s" scale="%.8g" '
+                     'depth="%.6f" transform="1 0 0 0 1 0 0 0 1 0 0 %.6f"/>\n'
+                     % (sh["name"], sh["path3mf"], sh.get("scale", 1.0),
+                        sh["depth"], sh["z"]))
         ms_parts.append(
             '  <part id="%d" subtype="normal_part">\n'
             '   <metadata key="name" value="%s"/>\n'
             '   <metadata key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"/>\n'
-            '   <metadata key="extruder" value="%d"/>\n'
+            '   <metadata key="extruder" value="%d"/>\n%s'
             '   <mesh_stat face_count="%d" edges_fixed="0" degenerate_facets="0" '
             'facets_removed="0" facets_reversed="0" backwards_edges="0"/>\n'
-            '  </part>' % (k, part["name"], extruder_of[k - 1], len(tris)))
+            '  </part>' % (k, part["name"], extruder_of[k - 1], shape, len(tris)))
     asm = len(parts) + 1
 
     core = "http://schemas.microsoft.com/3dmanufacturing/core/2015/02"
@@ -225,6 +240,8 @@ def write_bambu_color_mix_3mf(out_path, template_3mf, bases, parts, bed_mm=256.0
     out["3D/Objects/object_1.model"] = obj_model.encode()
     out["Metadata/project_settings.config"] = json.dumps(cfg, indent=4).encode()
     out["Metadata/model_settings.config"] = model_settings.encode()
+    for name, data in (extra_files or {}).items():   # e.g. the embedded leading SVG
+        out[name] = data if isinstance(data, bytes) else data.encode()
     with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as z:
         for name, data in out.items():
             z.writestr(name, data)
