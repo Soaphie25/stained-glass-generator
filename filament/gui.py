@@ -520,6 +520,10 @@ PAGE = """<!doctype html><html><head><meta charset=utf-8>
  label{display:inline-block;min-width:70px;color:#444}
  .row{margin:6px 0}
  input[type=text],input[type=number]{padding:5px 7px;border:1px solid #ccc;border-radius:6px}
+ .filebtn{display:inline-block;background:#eef1f6;border:1px solid #cbd2e0;border-radius:6px;padding:5px 10px;cursor:pointer;font-size:13px;color:#334}
+ .filebtn:hover{background:#e2e7f0}
+ .mkbtn{border:1px solid #ccc;background:#fff;border-radius:6px;padding:4px 9px;cursor:pointer;margin-left:4px}
+ .fn{color:#666;font-size:12px;margin-left:6px}
  button.go{background:#2d6cdf;color:#fff;border:0;border-radius:7px;padding:9px 18px;cursor:pointer;font-size:14px}
  button.go:disabled{opacity:.5}
  .cmd{font-family:ui-monospace,monospace;font-size:12px;background:#20242e;color:#b7c6ea;padding:8px 10px;border-radius:6px;overflow-x:auto;white-space:pre-wrap}
@@ -554,10 +558,10 @@ PAGE = """<!doctype html><html><head><meta charset=utf-8>
  <fieldset><legend>② Calibrate a filament&nbsp;·&nbsp;校准一种耗材</legend>
   <div class=row><label>name 名称</label><input type=text id=c_name placeholder="e.g. amber 例：琥珀">
     <label style="min-width:110px">layer 层高 (mm)</label><input type=number id=c_layer value="0.2" step="0.1" style="width:70px"></div>
-  <div class=row><label>white 白 *</label><input type=file id=f_white accept="image/*,.dng,.arw,.cr2,.nef,.raf"><button onclick="pickMarkers('cal_white','f_white','mk_area')" title="pick 4 corners manually 手动选 4 角" style="margin-left:4px">◈</button></div>
-  <div class=row><label>red 红</label><input type=file id=f_red accept="image/*,.dng,.arw,.cr2,.nef,.raf"><button onclick="pickMarkers('cal_red','f_red','mk_area')" title="pick 4 corners manually 手动选 4 角" style="margin-left:4px">◈</button><span style="color:#888;font-size:12px;margin-left:8px">try ISO 160 · 1/40s 起始参考</span></div>
-  <div class=row><label>green 绿</label><input type=file id=f_green accept="image/*,.dng,.arw,.cr2,.nef,.raf"><button onclick="pickMarkers('cal_green','f_green','mk_area')" title="pick 4 corners manually 手动选 4 角" style="margin-left:4px">◈</button><span style="color:#888;font-size:12px;margin-left:8px">try ISO 100 · 1/30s 起始参考</span></div>
-  <div class=row><label>blue 蓝</label><input type=file id=f_blue accept="image/*,.dng,.arw,.cr2,.nef,.raf"><button onclick="pickMarkers('cal_blue','f_blue','mk_area')" title="pick 4 corners manually 手动选 4 角" style="margin-left:4px">◈</button><span style="color:#888;font-size:12px;margin-left:8px">try ISO 125 · 1/40s · max screen brightness 最大亮度</span></div>
+  <div class=row><label>white 白 *</label><label class=filebtn for=f_white>📁 choose 选择</label><input type=file id=f_white accept="image/*,.dng,.arw,.cr2,.nef,.raf" style="display:none" onchange="fname('f_white')"><button class=mkbtn onclick="pickMarkers('cal_white','f_white','mk_area')" title="pick 4 corners manually 手动选 4 角">◈</button><span class=fn id=f_white_n></span></div>
+  <div class=row><label>red 红</label><label class=filebtn for=f_red>📁 choose 选择</label><input type=file id=f_red accept="image/*,.dng,.arw,.cr2,.nef,.raf" style="display:none" onchange="fname('f_red')"><button class=mkbtn onclick="pickMarkers('cal_red','f_red','mk_area')" title="pick 4 corners manually 手动选 4 角">◈</button><span class=fn id=f_red_n></span><span style="color:#888;font-size:12px;margin-left:8px">try ISO 160 · 1/40s 起始参考</span></div>
+  <div class=row><label>green 绿</label><label class=filebtn for=f_green>📁 choose 选择</label><input type=file id=f_green accept="image/*,.dng,.arw,.cr2,.nef,.raf" style="display:none" onchange="fname('f_green')"><button class=mkbtn onclick="pickMarkers('cal_green','f_green','mk_area')" title="pick 4 corners manually 手动选 4 角">◈</button><span class=fn id=f_green_n></span><span style="color:#888;font-size:12px;margin-left:8px">try ISO 100 · 1/30s 起始参考</span></div>
+  <div class=row><label>blue 蓝</label><label class=filebtn for=f_blue>📁 choose 选择</label><input type=file id=f_blue accept="image/*,.dng,.arw,.cr2,.nef,.raf" style="display:none" onchange="fname('f_blue')"><button class=mkbtn onclick="pickMarkers('cal_blue','f_blue','mk_area')" title="pick 4 corners manually 手动选 4 角">◈</button><span class=fn id=f_blue_n></span><span style="color:#888;font-size:12px;margin-left:8px">try ISO 125 · 1/40s · max screen brightness 最大亮度</span></div>
   <div class=row style="color:#888;font-size:12px">Suggested START settings only — then fine-tune by the <b>lit channel's</b> R/G/B histogram (~85%), not luma.<br>仅为起始参考——再依据<b>被点亮通道</b>的 R/G/B 直方图（约 85%）微调，而非亮度直方图。</div>
   <div class=row style="color:#777;font-size:12px">White alone works for most filaments. Add the matching colour screen(s) to sharpen the hue of a <b>pale</b> or <b>intense</b> filament — each colour screen measures its channel (R/G/B) at far higher SNR, and is used automatically when it's the cleaner fit.<br>大多数耗材只需白屏。<b>淡色</b>或<b>强吸收</b>耗材可另加对应彩色背光以校正色相——彩色屏能高信噪比地测量该通道，拟合更干净时会自动采用。</div>
   <div class=row style="color:#777;font-size:12px">◈ = pick the 4 corners by hand (per screen) if auto-detect grabs the wrong squares · ◈ = 手动逐屏选 4 个角点（自动识别选错方块时）</div>
@@ -642,6 +646,7 @@ function tab(id,b){document.querySelectorAll('.panel').forEach(p=>p.classList.re
  document.getElementById(id).classList.add('on');
  document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('on'));b.classList.add('on');}
 function f2b64(f){return new Promise(r=>{const x=new FileReader();x.onload=()=>r({filename:f.name,b64:x.result});x.readAsDataURL(f);});}
+function fname(id){const f=document.getElementById(id),n=document.getElementById(id+'_n');if(n)n.textContent=f.files[0]?f.files[0].name:'';}
 function img(p){return '<img class=prev src="/img?path='+encodeURIComponent(p)+'&t='+Date.now()+'">';}
 async function post(url,body){const r=await fetch(url,{method:'POST',body:JSON.stringify(body||{})});return r.json();}
 async function genPad(url,pfx,ncol){const st=document.getElementById(pfx+'_status');st.textContent='running…';
@@ -799,7 +804,7 @@ function renumber(){const ps=document.querySelectorAll('.mxpad');ps.forEach((el,
 function delPad(k){const el=document.getElementById('mxpad_'+k);if(el)el.remove();renumber();}
 function addPad(){const k=MXN++;const acc="image/*,.dng,.arw,.cr2,.nef,.raf";
  const defs=MXN===1?[0,100,20]:[0,50,10];
- const fu=(s,lb)=>`${lb} <input type=file id="mxp_${k}_${s}" accept="${acc}"><button onclick="pickMarkers('mix${k}_${s}','mxp_${k}_${s}','mxp_${k}_mk')" title="pick 4 corners">◈</button>`;
+ const fu=(s,lb)=>`${lb} <label class=filebtn for="mxp_${k}_${s}">📁</label><input type=file id="mxp_${k}_${s}" accept="${acc}" style="display:none" onchange="fname('mxp_${k}_${s}')"><button class=mkbtn onclick="pickMarkers('mix${k}_${s}','mxp_${k}_${s}','mxp_${k}_mk')" title="pick 4 corners">◈</button><span class=fn id="mxp_${k}_${s}_n"></span>`;
  const div=document.createElement('div');
  div.innerHTML=`<fieldset class=mxpad id="mxpad_${k}" style="border:1px dashed #bbc;margin:6px 0;padding:6px">
   <legend>Strip <span class=mxnum></span> <button onclick="delPad(${k})" style="color:#b00;font-size:11px;margin-left:6px">✕</button></legend>
