@@ -478,20 +478,106 @@ def do_genmixpad(data):
                         "stderr": err}, "filament/mixpad")
 
 
+def _fil_args(data):
+    fils = [f for f in (data.get("filaments") or []) if f]
+    return (["--filaments", ",".join(fils)] if fils else []), fils
+
+
 def do_map(data):
-    rc, out, err = sh(["python3", "filament/solve_recipe.py", "map"])
+    fa, _ = _fil_args(data)
+    rc, out, err = sh(["python3", "filament/solve_recipe.py", "map"] + fa)
     return {"ok": rc == 0, "stdout": out, "stderr": err,
             "images": ["%s/filament_map.png" % CALROOT]}
 
 
 def do_lut(data):
-    args = ["python3", "filament/solve_recipe.py", "lut"]
+    args = ["python3", "filament/solve_recipe.py", "lut"] + _fil_args(data)[0]
     match = (data.get("match") or "").strip()
     if match:
         args += ["--match", match]
     rc, out, err = sh(args)
     return {"ok": rc == 0, "stdout": out, "stderr": err,
             "images": ["%s/gamut.png" % CALROOT]}
+
+
+def _palette_png(hexes, path, cols=12, sw=46, pad=5, lab_h=13):
+    """Grid of reachable-colour swatches with hex labels."""
+    from PIL import Image, ImageDraw
+    n = max(1, len(hexes))
+    rows = (n + cols - 1) // cols
+    W = cols * (sw + pad) + pad
+    H = rows * (sw + lab_h + pad) + pad
+    im = Image.new("RGB", (W, H), (250, 250, 252))
+    d = ImageDraw.Draw(im)
+    for i, hx in enumerate(hexes):
+        r, c = divmod(i, cols)
+        x, y = pad + c * (sw + pad), pad + r * (sw + lab_h + pad)
+        rgb = tuple(int(hx[k:k + 2], 16) for k in (0, 2, 4))
+        d.rectangle([x, y, x + sw, y + sw], fill=rgb, outline=(180, 180, 190))
+        d.text((x + 1, y + sw + 1), "#" + hx, fill=(80, 80, 90))
+    im.save(path)
+    return path
+
+
+def _write_aco(hexes, path):
+    """Adobe Photoshop colour swatch (.aco). Writes a version-1 block (simple,
+    read by virtually everything) followed by a version-2 block with #hex names."""
+    import struct
+
+    def rgb16(hx):
+        return [int(hx[i:i + 2], 16) * 257 for i in (0, 2, 4)]   # 8-bit -> 0..65535
+    buf = bytearray()
+    buf += struct.pack(">HH", 1, len(hexes))         # v1: version, count
+    for hx in hexes:
+        r, g, b = rgb16(hx)
+        buf += struct.pack(">HHHHH", 0, r, g, b, 0)  # colour space 0 = RGB
+    buf += struct.pack(">HH", 2, len(hexes))         # v2: version, count
+    for hx in hexes:
+        r, g, b = rgb16(hx)
+        name = ("#" + hx).encode("utf-16-be")
+        buf += struct.pack(">HHHHH", 0, r, g, b, 0)
+        buf += struct.pack(">I", len(name) // 2 + 1)  # name length incl. null (UTF-16 units)
+        buf += name + b"\x00\x00"
+    with open(path, "wb") as f:
+        f.write(buf)
+    return path
+
+
+def do_exportpalette(data):
+    """Build the LUT for the selected filaments, then export the reachable colours
+    as a GIMP .gpl palette + an Adobe .aco swatch + a swatch PNG."""
+    import json as _json
+    import colorsys
+    fa, fils = _fil_args(data)
+    rc, out, err = sh(["python3", "filament/solve_recipe.py", "lut",
+                       "--out-dir", CALROOT] + fa)
+    if rc != 0:
+        return {"ok": False, "stderr": err or out}
+    lut = _json.load(open(os.path.join(ROOT, CALROOT, "color_lut.json")))
+    seen = {}
+    for e in lut.get("entries", []):                 # one recipe per reachable hex
+        hx = e["predicted_hex"].lstrip("#").lower()
+        seen.setdefault(hx, e)
+
+    def key(hx):                                      # sort by hue then lightness
+        r, g, b = (int(hx[i:i + 2], 16) / 255 for i in (0, 2, 4))
+        h, l, _s = colorsys.rgb_to_hls(r, g, b)
+        return (round(h, 2), round(l, 2))
+    hexes = sorted(seen, key=key)
+    tag = "-".join(fils) if fils else "all"
+    lines = ["GIMP Palette", "Name: Stained glass (%s)" % tag, "Columns: 12", "#"]
+    for hx in hexes:
+        r, g, b = (int(hx[i:i + 2], 16) for i in (0, 2, 4))
+        lines.append("%3d %3d %3d\t#%s" % (r, g, b, hx))
+    gpl = os.path.join(CALROOT, "palette.gpl")
+    with open(os.path.join(ROOT, gpl), "w") as f:
+        f.write("\n".join(lines) + "\n")
+    aco = os.path.join(CALROOT, "palette.aco")
+    _write_aco(hexes, os.path.join(ROOT, aco))
+    png = os.path.join(CALROOT, "palette.png")
+    _palette_png(hexes, os.path.join(ROOT, png))
+    return {"ok": True, "count": len(hexes), "download": gpl, "download_aco": aco,
+            "image": png, "filaments": fils}
 
 
 POST = {"/analyze": do_analyze, "/decode": do_decode,
@@ -501,7 +587,7 @@ POST = {"/analyze": do_analyze, "/decode": do_decode,
         "/gradient": do_gradient, "/savesigma": do_savesigma,
         "/mixtures": do_mixtures, "/loadmix": do_loadmix,
         "/genpad": do_genpad, "/genmixpad": do_genmixpad,
-        "/map": do_map, "/lut": do_lut}
+        "/map": do_map, "/lut": do_lut, "/exportpalette": do_exportpalette}
 
 
 # --------------------------------------------------------------------------- #
@@ -541,8 +627,7 @@ PAGE = """<!doctype html><html><head><meta charset=utf-8>
 <div class=tabs>
  <button class="on" onclick="tab('cal',this)">1 · Calibrate 单色校准</button>
  <button onclick="tab('mix',this)">2 · Mixture 混色校准</button>
- <button onclick="tab('map',this)">3 · Palette map 色板</button>
- <button onclick="tab('lut',this)">4 · Colour LUT 查找表</button>
+ <button onclick="tab('lut',this)">3 · Colour LUT 查找表</button>
 </div>
 
 <div id=cal class="panel on">
@@ -624,21 +709,24 @@ PAGE = """<!doctype html><html><head><meta charset=utf-8>
  <div id=mx_cmd></div><div id=mx_result></div>
 </div>
 
-<div id=map class="panel">
- <fieldset><legend>Palette map&nbsp;·&nbsp;色板总览</legend>
-  <button class=go onclick="runMap()">Refresh map 刷新</button> <span id=m_status></span>
- </fieldset>
- <div id=m_result></div>
-</div>
-
 <div id=lut class="panel">
- <fieldset><legend>Colour LUT &amp; gamut&nbsp;·&nbsp;色彩查找表与色域</legend>
-  <button class=go onclick="runLut('')">Build LUT + gamut 生成</button>
-  <span style="margin-left:16px">match target 匹配目标 <input type=text id=l_hex placeholder="ff8800" style="width:90px">
-  <button class=go onclick="matchHex()">Look up 查找</button></span>
-  <span id=l_status></span>
+ <fieldset><legend>① Filaments&nbsp;·&nbsp;选择耗材 <span style="font-weight:400;color:#777;font-size:12px">— which filaments the palette/gamut is built from 用于构建色板与色域的耗材</span></legend>
+  <div id=lf_chips style="color:#777">loading… 加载中…</div>
  </fieldset>
- <div id=l_match></div><div id=l_result></div>
+ <fieldset><legend>② Palette map&nbsp;·&nbsp;色板总览 <span style="font-weight:400;color:#777;font-size:12px">— each filament's absorption, class, mix cap, pair coverage 各耗材吸收/类别/上限/配对覆盖</span></legend>
+  <button class=go onclick="runMap()">Refresh map 刷新</button> <span id=m_status></span>
+  <div id=m_result></div>
+ </fieldset>
+ <fieldset><legend>③ Colour LUT, gamut &amp; export&nbsp;·&nbsp;查找表 / 色域 / 导出</legend>
+  <div class=row><button class=go onclick="runLut('')">Build LUT + gamut 生成</button>
+   <span style="margin-left:16px">match target 匹配目标 <input type=text id=l_hex placeholder="ff8800" style="width:90px">
+   <button class=go onclick="matchHex()">Look up 查找</button></span>
+   <span id=l_status></span></div>
+  <div class=row style="margin-top:6px"><button class=go onclick="exportPalette()">⬇ Export reachable colours 导出可打印颜色</button>
+   <span style="color:#777;font-size:12px;margin-left:8px">a .gpl palette (import into GIMP/Krita/Inkscape/Aseprite) + a swatch sheet — paint your art from these 生成 .gpl 调色板（可导入 GIMP/Krita/Inkscape/Aseprite）与色卡，据此作画</span>
+   <span id=exp_status></span></div>
+ </fieldset>
+ <div id=l_match></div><div id=l_result></div><div id=exp_result></div>
 </div>
 
 <script>
@@ -798,7 +886,8 @@ async function loadFils(){const r=await post('/filaments',{});const fs=r.filamen
    s.innerHTML=fs.map(f=>'<option'+(f==cur?' selected':'')+'>'+f+'</option>').join('');}
  if(fs.length>1&&document.getElementById('mx_b').selectedIndex==document.getElementById('mx_a').selectedIndex)document.getElementById('mx_b').selectedIndex=1;
  const rm=await post('/mixtures',{});const ms=rm.mixtures||[];const mv=document.getElementById('mv_pair');
- if(mv){const cur=mv.value;mv.innerHTML=ms.map(m=>'<option'+(m==cur?' selected':'')+'>'+m+'</option>').join('');}}
+ if(mv){const cur=mv.value;mv.innerHTML=ms.map(m=>'<option'+(m==cur?' selected':'')+'>'+m+'</option>').join('');}
+ LALL=fs;if(!LSEL.length)LSEL=fs.slice();else LSEL=LSEL.filter(f=>fs.includes(f));renderLutFils();}
 let MXN=0;
 function renumber(){const ps=document.querySelectorAll('.mxpad');ps.forEach((el,i)=>{el.querySelector('.mxnum').textContent=i+1;});}
 function delPad(k){const el=document.getElementById('mxpad_'+k);if(el)el.remove();renumber();}
@@ -838,17 +927,34 @@ async function mixfit(){const btn=document.getElementById('mx_go');btn.disabled=
    if(res.images)res.images.forEach(p=>h+=img(p));
    h+='<details><summary>raw table 原始数据</summary><pre class=out>'+t+'</pre></details>';}
  document.getElementById('mx_result').innerHTML=h;}
+let LSEL=[], LALL=[];       // LUT-tab filament selection (all calibrated by default)
+function renderLutFils(){const el=document.getElementById('lf_chips');if(!el)return;
+ if(!LALL.length){el.innerHTML='<span class=warn>No calibrated filaments yet — calibrate in tab 1. 尚无已校准耗材，请先在①校准。</span>';return;}
+ let h='';LALL.forEach(f=>{const on=LSEL.includes(f);
+   h+='<label style="margin-right:16px"><input type=checkbox '+(on?'checked':'')+' onchange="togL(&quot;'+f+'&quot;)"> '+f+'</label>';});
+ h+='&nbsp;<button onclick="LSEL=LALL.slice();renderLutFils()">all 全选</button> <span style="color:#777;font-size:12px">'+LSEL.length+'/'+LALL.length+'</span>';
+ el.innerHTML=h;}
+function togL(f){const i=LSEL.indexOf(f);if(i>=0)LSEL.splice(i,1);else LSEL.push(f);renderLutFils();}
 async function runMap(){document.getElementById('m_status').textContent='running…';
- const r=await post('/map',{});document.getElementById('m_status').textContent='';
+ const r=await post('/map',{filaments:LSEL});document.getElementById('m_status').textContent='';
  let h='<pre class=out>'+(r.stdout||r.stderr||'')+'</pre>';if(r.images)r.images.forEach(p=>h+=img(p));
  document.getElementById('m_result').innerHTML=h;}
 async function runLut(m){document.getElementById('l_status').textContent='running…';
- const r=await post('/lut',{match:m});document.getElementById('l_status').textContent='';
+ const r=await post('/lut',{match:m,filaments:LSEL});document.getElementById('l_status').textContent='';
  let h='<pre class=out>'+(r.stdout||r.stderr||'')+'</pre>';if(r.images)r.images.forEach(p=>h+=img(p));
  document.getElementById('l_result').innerHTML=h;}
+async function exportPalette(){if(!LSEL.length){alert('pick at least one filament 请至少选择一种耗材');return;}
+ document.getElementById('exp_status').textContent='building… 生成中…';
+ const r=await post('/exportpalette',{filaments:LSEL});document.getElementById('exp_status').textContent='';
+ if(!r.ok){document.getElementById('exp_result').innerHTML='<div class=warn><pre class=out>'+(r.stderr||'')+'</pre></div>';return;}
+ const dl=(p,lbl)=>'<a class=go style="text-decoration:none;padding:8px 14px;margin-right:8px" href="/file?path='+encodeURIComponent(p)+'" download>⬇ '+lbl+'</a>';
+ let h='<div class=done>✓ '+r.count+' reachable colours · 种可打印颜色 &nbsp; ['+(r.filaments||[]).join(', ')+']</div>';
+ h+='<div class=row style="margin-top:6px">'+dl(r.download,'.gpl (GIMP/Krita/Inkscape)')+(r.download_aco?dl(r.download_aco,'.aco (Photoshop)'):'')+'<span style="color:#555">import as a palette in your art app 在绘图软件中作为调色板导入</span></div>';
+ if(r.image)h+=img(r.image);
+ document.getElementById('exp_result').innerHTML=h;}
 async function matchHex(){const hx=document.getElementById('l_hex').value.trim().replace('#','');
  if(!hx)return;document.getElementById('l_status').textContent='running…';
- const r=await post('/lut',{match:hx});document.getElementById('l_status').textContent='';
+ const r=await post('/lut',{match:hx,filaments:LSEL});document.getElementById('l_status').textContent='';
  // parse "#target #predict  dE  recipe"
  let h='';const re=/#([0-9a-fA-F]{6})\\s+#([0-9a-fA-F]{6})\\s+([\\d.]+)\\s+(.+)/g,txt=r.stdout||'';let m2;
  while((m2=re.exec(txt))){h+='<div style="margin:8px 0"><span class=sw style="background:#'+m2[1]+'"></span>'+
