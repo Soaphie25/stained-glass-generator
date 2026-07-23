@@ -5,9 +5,11 @@ to hit each stained-glass pane's target colour. Transparent filaments have no
 standard CMYW set and slicer colour-mix previews are inaccurate versus the real
 backlit print, so we calibrate each filament empirically.
 
-Everything here depends on **numpy + PIL only** (no scipy / OpenCV) — homography,
-blob detection, and the diagnostic plots are all hand-rolled, so it runs on a
-stock Python with just those two packages.
+The calibration + solver core (`analyze_calibration.py`, `solve_recipe.py`,
+`mixture.py`) depends on **numpy + PIL only** (no scipy / OpenCV) — homography, blob
+detection, and the diagnostic plots are all hand-rolled. RAW decoding is optional
+(`rawpy`); the panel assembler `svg_to_3mf.py` uses `shapely` (already needed by the
+vectorizer).
 
 ## Workflow
 
@@ -18,11 +20,12 @@ cells built on top, so the whole thing is **one rigid piece** — the cells stay
 fixed relative to the markers however you set it on the screen. Each cell's total
 light path is `base_plate + increment` (increments 0.1 → 2.0 mm in 0.1 steps = 20
 cells → totals 0.5 → 2.4 mm); we fit transmittance against that total, so the base
-plate is just part of every slab and doesn't bias the fit. **Opaque black register
-markers** sit as a thin cap on the 4 corners (a separate part for your black
-filament) plus an orientation dot; because the black is top-layers-only, the
-slicer needs a single filament change near the end of the print. **Reference
-windows are real holes** through the plate, giving true bare-screen samples.
+plate is just part of every slab and doesn't bias the fit. The 4 corners are
+**square holes** by default (bright when backlit) — so the pad prints in **only
+your one transparent filament, no swap** — and you hand-pick them in the analyser.
+(`--black-markers` restores opaque black corner caps + an orientation dot, which
+auto-detect can find but need a filament change.) **Reference windows are real
+holes** through the plate, giving true bare-screen samples.
 
 ```bash
 python3 filament/make_calibration_pad.py          # -> filament/pad/{calibration_pad.3mf, layout.json, preview.png}
@@ -84,10 +87,12 @@ python3 filament/analyze_calibration.py analyze \
     --out-dir filament/cal_polyterra_teal
 ```
 
-Per photo it detects the 4 black markers (+ dot for orientation), fits a
-homography from pad-mm to image pixels, samples every cell and every bare-screen
-reference window, divides the cells by a plane fitted through the reference
-windows (removes screen brightness gradient / vignetting), and fits
+Per photo it locates the 4 corners — the bright corner **holes** (default; or
+hand-picked in the GUI / `--markers`), or auto-detected black caps with
+`--black-markers` — fits a homography from pad-mm to image pixels, samples every
+cell and every bare-screen reference window, divides the cells by a plane fitted
+through the reference windows (removes screen brightness gradient / vignetting),
+and fits
 
     ln T = b − a·t        a = absorption per mm,  T0 = exp(b) = surface term
 
@@ -154,16 +159,23 @@ interleaves thin alternating sublayers of 2–3 filaments at a ratio, and the ba
 eye blends them. Same physics baseline as full-layer (Beer–Lambert on the mix
 fractions), plus an interface-scatter term calibrated separately.
 
-**Calibrate a filament pair** — `make_mixture_pad.py` emits an 11-pad ramp (pad 0 =
-pure A … pad 10 = pure B). Each pad is a solid block **tagged with a mix ratio**;
-Bambu does the sublayer slicing. The output `mixture_pad.3mf` opens as a genuine
+**Calibrate a filament pair** — `make_mixture_pad.py` emits a **continuous A→B
+gradient strip**: one row of contiguous cells, each a solid part **tagged with its
+mix ratio** (Bambu does the sublayer slicing). It reads as one smooth bar — easy to
+judge by eye and to segment in CV. The output `mixture_pad.3mf` opens as a genuine
 Bambu project with all ratios pre-set (no color-triangle dragging):
 
 ```bash
-python3 filament/make_mixture_pad.py
-# -> filament/mixpad/mixture_pad.3mf  (12 filament slots: 1=A, 2=B, 3=black,
-#    4-12 = the 9 mixes; enable_mixed_color_sublayer=1)
+python3 filament/make_mixture_pad.py                       # 0→100 %B, 10% step
+python3 filament/make_mixture_pad.py --start 0 --end 50 --ramp-step 5   # zoom the first half
+# -> filament/mixpad/{mixture_pad.3mf, layout.json, preview.png}
 ```
+
+`--start/--end` pick a sub-range and `--ramp-step` the %B per cell (cells =
+span/step + 1); `--cell-w/--cell-h/--depth-mm` size the strip. There are **no
+printed markers** — the strip is a clean rectangle whose 4 physical corners you
+hand-pick; the analyser fixes exposure from the pure ends (which equal the ironed
+single-cals) and auto-detects which end is A vs B.
 
 It templates from the bundled `filament/templates/bambu_p2s.3mf` (a sanitised
 Bambu Lab P2S / PETG-Transparent skeleton). For a different machine, pass your own
@@ -185,6 +197,14 @@ python3 filament/mixture.py fit --layout filament/mixpad/layout.json --white mix
     --out-dir filament/mixcal        # -> mixture_calibration.json (per-filament σ)
 python3 filament/mixture.py selftest # recovers σ; predicts unseen A-C + 3-mixes
 ```
+
+**Combine several strips** (`--pads-spec`, or just add strips in the GUI): print a
+coarse 0–100 %@20 % strip plus a fine 0–50 %@10 % strip to sharpen a saturated
+region — all points feed **one joint fit**, so denser coverage tightens σ there. A
+partial strip is exposure-referenced from its one pure end (its non-pure end keeps
+its real scatter). Only the ramp **middle** drives σ; if a pure end shows the
+mixture-pad line artifact it's anchored to the ironed single-cal automatically, so
+you needn't iron and reprint the whole strip.
 
 **Solve / predict sub-layer recipes** — the fitted σ feeds straight into
 `solve_recipe.py --mode sub-layer` (pass one `--mixcal` per calibrated pair; they
@@ -219,8 +239,29 @@ from 0.1 to 0.2 mm -- so calibrate at the production layer height.
 base filament or a mix ratio) into a Bambu color-mix 3MF: de-duplicates distinct
 mixes into virtual filament slots, extends every per-filament config array to the
 new slot count (handling the dual-nozzle ×2-variant arrays), and preserves the
-template's Bambu markers so it loads as a genuine project. The stained-glass model
-generator will reuse this to emit per-pane recipes.
+template's Bambu markers so it loads as a genuine project. It can also embed extra
+package files and tag a part as an editable **`BambuStudioShape`** SVG.
+
+### Assemble the panel — `svg_to_3mf.py`
+
+The final stage joins everything: it reads the SVG generator's `color_NN_<hex>`
+panes, snaps each to the nearest **printable** recipe in the LUT, extrudes them to
+a flat panel, and writes **one Bambu colour-mix 3MF** via `bambu_mix3mf.py`.
+
+```bash
+python3 filament/svg_to_3mf.py --frag-dir myimage_fragments \
+    --cal-root filament/calibration --out panel.3mf \
+    --max-delta-2 10 --max-delta 20 \       # single ≤10 ΔE, else 2-mix ≤20 ΔE, else 3-mix
+    --leading myimage_leading.svg            # embed the came, raised on top
+```
+
+- Tiered by filament count: a pane is a **single** filament within `--max-delta-2`,
+  else a **2-mix** within `--max-delta`, else a **3-mix**. `--num-colors` reduces
+  the palette; `--filaments` restricts to your loaded AMS slots.
+- `--leading` embeds the came SVG as a raised editable part on the panes (see the
+  root README). `--no-sigma` uses the direct approximation (σ=0) when a pair has no
+  mixture calibration — workable without printing any ramp, slightly off.
+- Driven from `glass_gui.py` (image → panes → 3MF, with a live gamut preview).
 
 ### Self-tests (no printer needed)
 
@@ -248,15 +289,19 @@ python3 filament/mixture.py selftest
       (`solve_recipe.py --mode sub-layer`), real-print validated (ΔE 11.7→4.1)
 - [x] Third filament (blue): σ generalisation tested on the unseen red–blue pair
       (baseline ΔE 18.8 → generalised 10.7 → direct/posterior 5.2)
-- [x] Intense-filament detection + mix-fraction cap; printable-ratio LUT
-- [x] Colour LUT + gamut (`solve_recipe.py lut`); palette map (`map`)
+- [x] Intense-filament detection + mix-fraction cap (spectrum-side dodge with pale
+      diluents only); printable-ratio LUT
+- [x] Colour LUT + gamut (`solve_recipe.py lut`); palette map (`map`); palette
+      suggester (rank filament subsets for an image)
+- [x] Continuous **gradient-strip** mixture pad + **multi-pad** joint σ fit
+      (combine coarse + fine ranges); endpoint anchoring to the ironed single-cals
+- [x] **Assemble the panel** (`svg_to_3mf.py`): SVG panes → LUT → per-pane recipe →
+      one Bambu color-mix 3MF, with tiered 1/2/3-mix thresholds, direct-approx
+      (σ=0) fallback, and the leading embedded as an editable `BambuStudioShape`
+- [x] **Two browser GUIs**: `filament/gui.py` (calibrate/map/lut, σ preview slider,
+      hue/sat/bright tuning) and `glass_gui.py` (image → panes → printable 3MF);
+      both bilingual (EN + 简体中文), showing the CLI command + live previews
 - [ ] Upgrade Delta-E CIE76 → CIEDE2000
-- [x] **Browser GUI** (`gui.py`): local stdlib server wrapping calibrate/map/lut,
-      bilingual (EN + 简体中文), shows the CLI command + previews + shot-quality
-      problems (`python3 filament/gui.py` → http://127.0.0.1:8000)
-- [ ] **Final**: SVG panes (`color_NN_<hex>`) → LUT lookup → per-pane recipe →
-      one Bambu color-mix 3MF with every pane's colour embedded (reuses
-      `bambu_mix3mf.py`)
 
 ## Folder layout & workflow
 

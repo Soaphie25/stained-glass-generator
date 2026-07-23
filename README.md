@@ -1,16 +1,32 @@
-# PNG → Stained-Glass SVG
+# PNG → 3D-printed Stained Glass
 
 **English** | [简体中文](读我.md)
 
-Convert a raster image (PNG or JPEG) into print-ready vector artifacts for a
-**3D-printed stained-glass** pipeline: a silhouette, black leading (came) lines,
-and flat-shaded glass fragments — one file per glass color, plus a black leading
-layer.
+Turn any image into a **3D-printed stained-glass panel**: solid-colour glass
+panes bounded by black leading (came), printed in **transparent filament** so it
+glows when backlit. The output is deliberately **flat, per-pane shading** (no
+gradients) — a filament printer can't reproduce photographic detail, so the image
+is segmented into solid panes, exactly like real stained glass.
 
-The output is deliberately **flat, per-pane shading** (no gradients): a
-filament 3D printer can't reproduce photographic detail, so the image is
-segmented into solid-color glass panes bounded by black leading, exactly like
-real stained glass.
+The repo is an end-to-end pipeline in three stages, each usable on its own:
+
+1. **Vectorise** — `png_to_stained_glass_svg.py` splits the image into an exact
+   planar partition of glass panes + the leading lines (this README).
+2. **Calibrate** — measure each transparent filament's real backlit colour and
+   build a printable-colour LUT + gamut ([`filament/`](filament/README.md)).
+3. **Assemble** — `svg_to_3mf.py` snaps every pane to its nearest printable
+   filament recipe and writes **one Bambu *Color Mixing* 3MF**, optionally with
+   the leading embedded on top as an editable SVG part.
+
+### Browser GUIs (the easy path)
+
+Two local, dependency-light web apps wrap the whole thing — bilingual (EN + 简体中文),
+each shows the underlying CLI command plus live previews:
+
+```bash
+python3 glass_gui.py       # image → panes → printable 3MF   → http://127.0.0.1:8010
+python3 filament/gui.py    # calibrate filaments → LUT/gamut  → http://127.0.0.1:8000
+```
 
 ## 3D-printed result
 
@@ -63,6 +79,29 @@ SVG page size and fill color — hence the marks and one-file-per-color).
 
 ---
 
+## From panes to a printable 3MF
+
+The `color_NN_<hex>.svg` panes above are *design* colours. To actually print them
+in **transparent filament**, each pane's colour is matched to the nearest colour
+a real backlit print can hit — a single filament, or a 2–3 filament Bambu
+sub-layer mix — then the panes are extruded and assembled into **one Bambu 3MF**:
+
+```bash
+# after calibrating your filaments (see filament/README.md):
+python3 filament/svg_to_3mf.py --frag-dir myimage_fragments \
+    --cal-root filament/calibration --out panel.3mf \
+    --leading myimage_leading.svg          # embed the came on top (optional)
+```
+
+- Every pane becomes a part tagged with its printable recipe (single filament or a
+  sub-layer colour-mix ratio); it opens as a genuine Bambu *Color Mixing* project.
+- `--leading` embeds the came as a **raised, editable SVG part** sitting on the
+  seams (Bambu's `BambuStudioShape`), so the black lines print on top of the glass.
+- The colour matching, calibration, and gamut are all in
+  **[`filament/`](filament/README.md)** — or just drive it from `glass_gui.py`.
+
+---
+
 ## Why it's built this way
 
 - **1 px = 0.4 mm** by default (a typical nozzle diameter). Max print size is
@@ -88,6 +127,7 @@ Python 3.9+ and a few scientific packages:
 
 ```bash
 pip install pillow numpy scipy scikit-image opencv-python shapely
+pip install rawpy            # optional: decode RAW (DNG/ARW/…) calibration photos
 ```
 
 ---
@@ -230,12 +270,15 @@ Run `python3 png_to_stained_glass_svg.py --help` for the complete list.
 
 ## Printing notes
 
-- Print the **`color_NN_*.svg`** files as separate colored layers and
-  **`<name>_leading.svg`** as the black layer on top.
-- Keep the corner **registration marks** on every layer — they're how the layers
-  stay aligned on import.
-- Black leading is a separate layer, so black does **not** consume a color slot
-  (except genuine black *glass* blocks).
+- **Easiest:** build **one Bambu colour-mix 3MF** from the panes (see
+  [From panes to a printable 3MF](#from-panes-to-a-printable-3mf) /
+  `glass_gui.py`) — every pane's filament recipe and the leading come embedded.
+- **Manual layers:** or import the raw SVGs yourself — the **`color_NN_*.svg`**
+  files as separate colored layers and **`<name>_leading.svg`** as the black layer
+  on top. Keep the corner **registration marks** on every layer; they're how the
+  layers stay aligned on import.
+- Black leading is a separate layer/part, so black does **not** consume a color
+  slot (except genuine black *glass* blocks).
 
 ---
 
