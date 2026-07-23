@@ -543,9 +543,40 @@ def _write_aco(hexes, path):
     return path
 
 
+def _kmeans_lab(labs, k, iters=40):
+    """Reduce reachable colours to k perceptually-distinct ones: k-means in Lab
+    (deterministic farthest-point seeding), each cluster represented by the actual
+    reachable colour nearest its centroid.  Returns the kept row indices."""
+    import numpy as np
+    X = np.asarray(labs, float)
+    n = len(X)
+    if k >= n:
+        return list(range(n))
+    idx = [0]                                        # farthest-point seed (no RNG)
+    d2 = ((X - X[0]) ** 2).sum(1)
+    for _ in range(1, k):
+        j = int(d2.argmax())
+        idx.append(j)
+        d2 = np.minimum(d2, ((X - X[j]) ** 2).sum(1))
+    C = X[idx].copy()
+    for _ in range(iters):
+        assign = np.argmin(((X[:, None, :] - C[None, :, :]) ** 2).sum(2), axis=1)
+        newC = C.copy()
+        for c in range(k):
+            m = assign == c
+            if m.any():
+                newC[c] = X[m].mean(0)
+        if np.allclose(newC, C):
+            break
+        C = newC
+    chosen = {int(((X - C[c]) ** 2).sum(1).argmin()) for c in range(k)}
+    return sorted(chosen)
+
+
 def do_exportpalette(data):
     """Build the LUT for the selected filaments, then export the reachable colours
-    as a GIMP .gpl palette + an Adobe .aco swatch + a swatch PNG."""
+    as a GIMP .gpl palette + an Adobe .aco swatch + a swatch PNG.  With ``max_n``,
+    reduce to that many perceptually-distinct colours (Lab k-means)."""
     import json as _json
     import colorsys
     fa, fils = _fil_args(data)
@@ -558,12 +589,35 @@ def do_exportpalette(data):
     for e in lut.get("entries", []):                 # one recipe per reachable hex
         hx = e["predicted_hex"].lstrip("#").lower()
         seen.setdefault(hx, e)
+    items = list(seen.items())                        # [(hex, entry)]
+
+    def _lab(hx, e):
+        if e.get("lab"):
+            return e["lab"]
+        r, g, b = (int(hx[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+        # sRGB -> Lab (D65) so clustering is perceptual even if the LUT lacked lab
+        lin = [(c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4)
+               for c in (r, g, b)]
+        x = (0.4124 * lin[0] + 0.3576 * lin[1] + 0.1805 * lin[2]) / 0.95047
+        y = 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+        z = (0.0193 * lin[0] + 0.1192 * lin[1] + 0.9505 * lin[2]) / 1.08883
+        f = [(t ** (1 / 3.0) if t > 0.008856 else 7.787 * t + 16 / 116.0)
+             for t in (x, y, z)]
+        return [116 * f[1] - 16, 500 * (f[0] - f[1]), 200 * (f[1] - f[2])]
+
+    try:
+        max_n = int(data.get("max_n"))
+    except (TypeError, ValueError):
+        max_n = 0
+    if max_n and max_n < len(items):                  # thin to N distinct swatches
+        keep = _kmeans_lab([_lab(hx, e) for hx, e in items], max_n)
+        items = [items[i] for i in keep]
 
     def key(hx):                                      # sort by hue then lightness
         r, g, b = (int(hx[i:i + 2], 16) / 255 for i in (0, 2, 4))
         h, l, _s = colorsys.rgb_to_hls(r, g, b)
         return (round(h, 2), round(l, 2))
-    hexes = sorted(seen, key=key)
+    hexes = sorted((hx for hx, _ in items), key=key)
     tag = "-".join(fils) if fils else "all"
     lines = ["GIMP Palette", "Name: Stained glass (%s)" % tag, "Columns: 12", "#"]
     for hx in hexes:
@@ -723,8 +777,9 @@ PAGE = """<!doctype html><html><head><meta charset=utf-8>
    <button class=go onclick="matchHex()">Look up 查找</button></span>
    <span id=l_status></span></div>
   <div class=row style="margin-top:6px"><button class=go onclick="exportPalette()">⬇ Export reachable colours 导出可打印颜色</button>
-   <span style="color:#777;font-size:12px;margin-left:8px">a .gpl palette (import into GIMP/Krita/Inkscape/Aseprite) + a swatch sheet — paint your art from these 生成 .gpl 调色板（可导入 GIMP/Krita/Inkscape/Aseprite）与色卡，据此作画</span>
+   &nbsp; max colours 最多颜色 <input type=number id=exp_maxn placeholder="all 全部" min=1 style="width:70px">
    <span id=exp_status></span></div>
+  <div class=row style="color:#777;font-size:12px">.gpl (GIMP/Krita/Inkscape/Aseprite) + .aco (Photoshop) + a swatch sheet — paint your art from colours that will actually print. Leave max blank for the full set, or cap it to the N most perceptually-distinct. 生成 .gpl / .aco 调色板与色卡，据此用真正可打印的颜色作画；留空为全部，或限制为最有区分度的 N 种。</div>
  </fieldset>
  <div id=l_match></div><div id=l_result></div><div id=exp_result></div>
 </div>
@@ -945,7 +1000,7 @@ async function runLut(m){document.getElementById('l_status').textContent='runnin
  document.getElementById('l_result').innerHTML=h;}
 async function exportPalette(){if(!LSEL.length){alert('pick at least one filament 请至少选择一种耗材');return;}
  document.getElementById('exp_status').textContent='building… 生成中…';
- const r=await post('/exportpalette',{filaments:LSEL});document.getElementById('exp_status').textContent='';
+ const r=await post('/exportpalette',{filaments:LSEL,max_n:document.getElementById('exp_maxn').value});document.getElementById('exp_status').textContent='';
  if(!r.ok){document.getElementById('exp_result').innerHTML='<div class=warn><pre class=out>'+(r.stderr||'')+'</pre></div>';return;}
  const dl=(p,lbl)=>'<a class=go style="text-decoration:none;padding:8px 14px;margin-right:8px" href="/file?path='+encodeURIComponent(p)+'" download>⬇ '+lbl+'</a>';
  let h='<div class=done>✓ '+r.count+' reachable colours · 种可打印颜色 &nbsp; ['+(r.filaments||[]).join(', ')+']</div>';
