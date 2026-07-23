@@ -245,3 +245,13 @@ test_*mix.3mf
 
 # real calibration photos (large; user data)
 photo/
+
+# macOS junk (AppleDouble sidecars, Finder metadata)
+.DS_Store
+._*
+
+# user test image (accidentally committed once; keep it local, out of the repo)
+Night sky.png
+Butterfly.png
+Snowfield.png
+svg_sample.3mf
