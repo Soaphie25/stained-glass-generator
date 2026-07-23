@@ -13,7 +13,9 @@ The repo is an end-to-end pipeline in three stages, each usable on its own:
 1. **Vectorise** — `png_to_stained_glass_svg.py` splits the image into an exact
    planar partition of glass panes + the leading lines (this README).
 2. **Calibrate** — measure each transparent filament's real backlit colour and
-   build a printable-colour LUT + gamut ([`filament/`](filament/README.md)).
+   build a printable-colour LUT + gamut ([`filament/`](filament/README.md)); you
+   can **export the reachable colours** (`.gpl`/`.aco`) and paint your art in a
+   palette that will actually print.
 3. **Assemble** — `svg_to_3mf.py` snaps every pane to its nearest printable
    filament recipe and writes **one Bambu *Color Mixing* 3MF**, optionally with
    the leading embedded on top as an editable SVG part.
