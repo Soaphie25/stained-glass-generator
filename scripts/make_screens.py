@@ -32,7 +32,8 @@ def main(argv=None):
     opts = p.parse_args(argv)
 
     out_dir = opts.out_dir or os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "screens")
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "filament", "screens")
     os.makedirs(out_dir, exist_ok=True)
     for name, rgb in COLOURS.items():
         Image.new("RGB", (opts.width, opts.height), rgb).save(

@@ -3,7 +3,7 @@
 calibration GUI).  Workflow:
 
   1. Check the calibration LUT/gamut.  If nothing is calibrated yet, it points you
-     to the filament GUI (``python3 filament/gui.py``) to calibrate first.
+     to the filament GUI (``python3 filament_gui.py``) to calibrate first.
   2. Pick a JPEG/PNG.
   3. Vectorise it to stained-glass panes (a few key options + a "More" panel for
      all of them) and show the GAMUT preview -- each pane painted the printable
@@ -11,10 +11,10 @@ calibration GUI).  Workflow:
   4. When happy, generate the Bambu colour-mix 3MF (options: depth + size, aspect
      kept) and download it.
 
-Stdlib http.server, no new deps; shells out to png_to_stained_glass_svg.py and
-imports svg_to_3mf in-process.  Bilingual EN + 简体中文.
+Stdlib http.server, no new deps; shells out to scripts/png_to_stained_glass_svg.py
+and imports svg_to_3mf in-process.  Bilingual EN + 简体中文.
 
-    python3 filament/glass_gui.py            # -> http://127.0.0.1:8010
+    python3 glass_gui.py                     # -> http://127.0.0.1:8010
 """
 import argparse
 import base64
@@ -31,7 +31,7 @@ from urllib.parse import urlparse, parse_qs
 ROOT = os.path.dirname(os.path.abspath(__file__))     # repo root (this file lives here)
 CALROOT = "filament/calibration"
 WORK = "filament/calibration/_glass"          # gitignored scratch (under calibration/)
-sys.path.insert(0, os.path.join(ROOT, "filament"))    # import svg_to_3mf/solve_recipe
+sys.path.insert(0, os.path.join(ROOT, "scripts"))     # import svg_to_3mf/solve_recipe
 
 
 def sh(args):
@@ -83,7 +83,8 @@ def do_convert(data):
     # include the vectoriser's mtime so a code fix always busts the cache (else a
     # palette-only re-run would reuse fragments made by the OLD vectoriser).
     try:
-        vec_mtime = os.path.getmtime(os.path.join(ROOT, "png_to_stained_glass_svg.py"))
+        vec_mtime = os.path.getmtime(os.path.join(ROOT, "scripts",
+                                                  "png_to_stained_glass_svg.py"))
     except OSError:
         vec_mtime = 0
     key = (hashlib.sha1(raw).hexdigest(),
@@ -98,7 +99,7 @@ def do_convert(data):
     img = os.path.join(WORK, "input" + ext)
     with open(os.path.join(ROOT, img), "wb") as fh:
         fh.write(raw)
-    args = ["python3", "png_to_stained_glass_svg.py", img,
+    args = ["python3", "scripts/png_to_stained_glass_svg.py", img,
             "--fragments-dir", fragdir, "--leading-svg", os.path.join(WORK, "leading.svg"),
             "--fragment-color", "original"]
     for k in _SVG_OPTS:
@@ -129,7 +130,7 @@ def _frag_colors(fragdir):
 def do_gamut(data):
     os.makedirs(os.path.join(ROOT, WORK), exist_ok=True)
     sel = data.get("filaments") or []
-    args = ["python3", "filament/solve_recipe.py", "lut", "--cal-root", CALROOT,
+    args = ["python3", "scripts/solve_recipe.py", "lut", "--cal-root", CALROOT,
             "--out-dir", WORK]
     if sel:
         args += ["--filaments", ",".join(sel)]
@@ -331,7 +332,7 @@ function svgFlags(){return {'smooth-curves':$('o_smooth').checked,'merge-leading
 let ALLFIL=[], SEL=[], SLOTS=4, CONVERTED=false;
 function params(){return {depth:$('o_depth').value,size:$('o_size').value,colors:$('o_colors').value,max_delta:$('o_maxdelta').value,max_delta_2:$('o_maxdelta2').value,filaments:SEL,no_sigma:$('o_nosigma').checked,leading:$('o_leading').checked,lead_height:$('o_leadh').value};}
 async function lut(){const r=await post('/lutstatus',{});
- if(!r.ready){$('lut').innerHTML='<div class=warn><b>No calibrated filaments yet · 尚无已校准耗材</b><br>Calibrate filaments first: run <code>python3 filament/gui.py</code> · 请先用耗材 GUI 校准：运行 <code>python3 filament/gui.py</code></div>';return;}
+ if(!r.ready){$('lut').innerHTML='<div class=warn><b>No calibrated filaments yet · 尚无已校准耗材</b><br>Calibrate filaments first: run <code>python3 filament_gui.py</code> · 请先用耗材 GUI 校准：运行 <code>python3 filament_gui.py</code></div>';return;}
  ALLFIL=r.filaments; if(SEL.length===0)SEL=ALLFIL.slice(0,Math.min(SLOTS,ALLFIL.length));
  renderFil(); genGamut();}
 function renderFil(){

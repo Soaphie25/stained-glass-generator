@@ -257,8 +257,8 @@ def main(argv=None):
     p.add_argument("--out-dir", default=None)
     opts = p.parse_args(argv)
 
-    out_dir = opts.out_dir or os.path.join(os.path.dirname(
-        os.path.abspath(__file__)), "mixpad")
+    out_dir = opts.out_dir or os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "filament", "mixpad")
     os.makedirs(out_dir, exist_ok=True)
 
     layout, fracs = build_layout(opts)

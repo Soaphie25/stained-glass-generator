@@ -32,17 +32,17 @@ can match; the solver may mix up to --max-filaments (default 3) from the pool.
 
 Usage:
     # calibrations + explicit targets
-    python3 filament/solve_recipe.py solve \
+    python3 scripts/solve_recipe.py solve \
         --cal amber=filament/cal_amber/calibration.json \
         --cal teal=filament/cal_teal/calibration.json \
         --targets 166693,982d24,cfac37 --out-dir filament/recipes
 
     # read the target palette straight from an SVG-generator fragments folder
-    python3 filament/solve_recipe.py solve --cal-dir filament/cals \
+    python3 scripts/solve_recipe.py solve --cal-dir filament/cals \
         --from-svg-dir sample1_fragments --out-dir filament/recipes
 
     # no printer / no calibrations yet: synthetic end-to-end check
-    python3 filament/solve_recipe.py selftest
+    python3 scripts/solve_recipe.py selftest
 """
 import argparse
 import glob

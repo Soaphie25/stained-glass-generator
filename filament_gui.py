@@ -6,8 +6,8 @@ out to the existing CLI tools (analyze_calibration.py / mixture.py / solve_recip
 then shows their output + preview images.  The browser only builds the commands and
 uploads the picked photos (as base64 JSON) -- all the real work stays in the CLI.
 
-    python3 filament/gui.py            # -> http://127.0.0.1:8000  (opens a browser)
-    python3 filament/gui.py --port 9000 --no-open
+    python3 filament_gui.py            # -> http://127.0.0.1:8000  (opens a browser)
+    python3 filament_gui.py --port 9000 --no-open
 
 Panels:
   * Calibrate -- 4 file pickers (white / red / green / blue), capture requirements
@@ -29,13 +29,13 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)                       # repo root (run CLIs from here)
+ROOT = HERE                                        # repo root (this file lives here)
 CALROOT = "filament/calibration"
 PAD_LAYOUT = "filament/pad/layout.json"
 MIX_LAYOUT = "filament/mixpad/layout.json"
 UPLOADS = "filament/calibration/_uploads"
 
-sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(HERE, "scripts"))
 try:
     from analyze_calibration import CAPTURE_TIPS      # noqa: F401 (kept for ref)
 except Exception:
@@ -103,7 +103,7 @@ def do_analyze(data):
     layout = data.get("layout") or PAD_LAYOUT
     stage = os.path.join(UPLOADS, name)
     os.makedirs(os.path.join(ROOT, stage), exist_ok=True)
-    args = ["python3", "filament/analyze_calibration.py", "analyze",
+    args = ["python3", "scripts/analyze_calibration.py", "analyze",
             "--layout", layout, "--name", name, "--layer-mm", layer,
             "--cal-root", CALROOT]
     used = []
@@ -409,7 +409,7 @@ def do_mixfit(data):
     specp = os.path.join(stage, "spec.json")
     with open(os.path.join(ROOT, specp), "w") as fh:
         json.dump({"pads": spec_pads}, fh)
-    args = ["python3", "filament/mixture.py", "fit", "--pads-spec", specp,
+    args = ["python3", "scripts/mixture.py", "fit", "--pads-spec", specp,
             "--cal-root", CALROOT,
             "--a", "%s=%s/%s/calibration.json" % (a, CALROOT, a),
             "--b", "%s=%s/%s/calibration.json" % (b, CALROOT, b)]
@@ -455,7 +455,7 @@ def _batch_args(data):
 
 
 def do_genpad(data):
-    args = ["python3", "filament/make_calibration_pad.py",
+    args = ["python3", "scripts/make_calibration_pad.py",
             "--screen-w-mm", str(data.get("w") or 64),
             "--screen-h-mm", str(data.get("h") or 138),
             "--step-mm", str(data.get("step") or 0.2)] + _batch_args(data)
@@ -466,7 +466,7 @@ def do_genpad(data):
 
 def do_genmixpad(data):
     end = data.get("end")
-    args = ["python3", "filament/make_mixture_pad.py",
+    args = ["python3", "scripts/make_mixture_pad.py",
             "--depth-mm", str(data.get("depth") or 1.0),
             "--cell-w", str(data.get("cell_w") or 10),
             "--cell-h", str(data.get("cell_h") or 20),
@@ -485,13 +485,13 @@ def _fil_args(data):
 
 def do_map(data):
     fa, _ = _fil_args(data)
-    rc, out, err = sh(["python3", "filament/solve_recipe.py", "map"] + fa)
+    rc, out, err = sh(["python3", "scripts/solve_recipe.py", "map"] + fa)
     return {"ok": rc == 0, "stdout": out, "stderr": err,
             "images": ["%s/filament_map.png" % CALROOT]}
 
 
 def do_lut(data):
-    args = ["python3", "filament/solve_recipe.py", "lut"] + _fil_args(data)[0]
+    args = ["python3", "scripts/solve_recipe.py", "lut"] + _fil_args(data)[0]
     match = (data.get("match") or "").strip()
     if match:
         args += ["--match", match]
@@ -580,7 +580,7 @@ def do_exportpalette(data):
     import json as _json
     import colorsys
     fa, fils = _fil_args(data)
-    rc, out, err = sh(["python3", "filament/solve_recipe.py", "lut",
+    rc, out, err = sh(["python3", "scripts/solve_recipe.py", "lut",
                        "--out-dir", CALROOT] + fa)
     if rc != 0:
         return {"ok": False, "stderr": err or out}

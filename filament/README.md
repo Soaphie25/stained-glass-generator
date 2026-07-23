@@ -30,7 +30,7 @@ auto-detect can find but need a filament change.) **Reference windows are real
 holes** through the plate, giving true bare-screen samples.
 
 ```bash
-python3 filament/make_calibration_pad.py          # -> filament/pad/{calibration_pad.3mf, layout.json, preview.png}
+python3 scripts/make_calibration_pad.py          # -> filament/pad/{calibration_pad.3mf, layout.json, preview.png}
 ```
 
 Sized to lie *inside* a phone screen (default 64×138 mm active area → 58×132 mm
@@ -62,7 +62,7 @@ as OK / TOO DIM / TOO BRIGHT.
 
 Display the bundled standard primaries `filament/screens/{white,red,green,blue}.png`
 (pure sRGB #FFFFFF/#FF0000/#00FF00/#0000FF; regenerate at your screen's resolution
-with `python3 filament/make_screens.py --width W --height H`).
+with `python3 scripts/make_screens.py --width W --height H`).
 
 Practical must-dos: turn OFF True Tone / Night Shift / auto-brightness, avoid
 glare, shoot RAW. **Expose each screen colour on its own** — see below.
@@ -83,7 +83,7 @@ through the gaps between cells is what normalises out exposure/brightness.
 ### 3. Analyse the photos — `analyze_calibration.py`
 
 ```bash
-python3 filament/analyze_calibration.py analyze \
+python3 scripts/analyze_calibration.py analyze \
     --layout filament/pad/layout.json --name "PolyTerra Teal" \
     --white white.jpg --red red.jpg --green green.jpg --blue blue.jpg \
     --out-dir filament/cal_polyterra_teal
@@ -110,7 +110,7 @@ filaments + thicknesses that best matches each target under a white backlight
 up to `--max-filaments` (default 3) from the pool.
 
 ```bash
-python3 filament/solve_recipe.py solve \
+python3 scripts/solve_recipe.py solve \
     --cal-dir filament/cals \
     --from-svg-dir sample1_fragments \
     --out-dir filament/recipes
@@ -136,7 +136,7 @@ backlit swatches at several thicknesses, and a **pair-coverage matrix** (which
 pairs are directly σ-calibrated `D`, which are only generalizable `g`).
 
 ```bash
-python3 filament/solve_recipe.py map --cal-dir filament/cals \
+python3 scripts/solve_recipe.py map --cal-dir filament/cals \
     --mixcal filament/mixcal/mixture_calibration.json \
     --mixcal filament/mixcal_gb/mixture_calibration.json   # -> filament_map.png
 ```
@@ -182,8 +182,8 @@ judge by eye and to segment in CV. The output `mixture_pad.3mf` opens as a genui
 Bambu project with all ratios pre-set (no color-triangle dragging):
 
 ```bash
-python3 filament/make_mixture_pad.py                       # 0→100 %B, 10% step
-python3 filament/make_mixture_pad.py --start 0 --end 50 --ramp-step 5   # zoom the first half
+python3 scripts/make_mixture_pad.py                       # 0→100 %B, 10% step
+python3 scripts/make_mixture_pad.py --start 0 --end 50 --ramp-step 5   # zoom the first half
 # -> filament/mixpad/{mixture_pad.3mf, layout.json, preview.png}
 ```
 
@@ -208,10 +208,10 @@ printed — A–C from A–B + B–C) and **3-filament** mixes from the same pai
 σ. A pair's own measured ramp overrides the generalized prediction when they differ.
 
 ```bash
-python3 filament/mixture.py fit --layout filament/mixpad/layout.json --white mix.dng \
+python3 scripts/mixture.py fit --layout filament/mixpad/layout.json --white mix.dng \
     --a red=filament/cals/red/calibration.json --b green=filament/cals/green/calibration.json \
     --out-dir filament/mixcal        # -> mixture_calibration.json (per-filament σ)
-python3 filament/mixture.py selftest # recovers σ; predicts unseen A-C + 3-mixes
+python3 scripts/mixture.py selftest # recovers σ; predicts unseen A-C + 3-mixes
 ```
 
 **Combine several strips** (`--pads-spec`, or just add strips in the GUI): print a
@@ -228,12 +228,12 @@ merge, so a shared filament's σ covers unseen pairs A-C from A-B + B-C):
 
 ```bash
 # forward: predict a specific mix's backlit colour
-python3 filament/solve_recipe.py predict --cal-dir filament/cals \
+python3 scripts/solve_recipe.py predict --cal-dir filament/cals \
     --mixcal filament/mixcal/mixture_calibration.json \
     --mix red=0.5,green=0.5 --thickness 1.0
 
 # solve: best (filament pair + ratio + thickness) per target palette
-python3 filament/solve_recipe.py solve --mode sub-layer --cal-dir filament/cals \
+python3 scripts/solve_recipe.py solve --mode sub-layer --cal-dir filament/cals \
     --mixcal filament/mixcal/mixture_calibration.json \
     --from-svg-dir sample1_fragments --layer 0.2 --out-dir filament/recipes_sub
 ```
@@ -265,7 +265,7 @@ panes, snaps each to the nearest **printable** recipe in the LUT, extrudes them 
 a flat panel, and writes **one Bambu colour-mix 3MF** via `bambu_mix3mf.py`.
 
 ```bash
-python3 filament/svg_to_3mf.py --frag-dir myimage_fragments \
+python3 scripts/svg_to_3mf.py --frag-dir myimage_fragments \
     --cal-root filament/calibration --out panel.3mf \
     --max-delta-2 10 --max-delta 20 \       # single ≤10 ΔE, else 2-mix ≤20 ΔE, else 3-mix
     --leading myimage_leading.svg            # embed the came, raised on top
@@ -286,11 +286,11 @@ filament (perspective warp + brightness gradient + noise) and check it recovers
 the coefficients — this is how the pipeline was validated before any real print:
 
 ```bash
-python3 filament/analyze_calibration.py selftest --out-dir /tmp/cal
+python3 scripts/analyze_calibration.py selftest --out-dir /tmp/cal
 # -> SELF-TEST PASSED, recovered absorption within <0.01/mm of ground truth
-python3 filament/solve_recipe.py selftest
+python3 scripts/solve_recipe.py selftest
 # -> SELF-TEST PASSED, planted recipes recovered to dE<=2
-python3 filament/mixture.py selftest
+python3 scripts/mixture.py selftest
 # -> SELF-TEST PASSED, unseen A-C pair + 3-filament mixes predicted to dE<1.5
 ```
 
@@ -314,7 +314,7 @@ python3 filament/mixture.py selftest
 - [x] **Assemble the panel** (`svg_to_3mf.py`): SVG panes → LUT → per-pane recipe →
       one Bambu color-mix 3MF, with tiered 1/2/3-mix thresholds, direct-approx
       (σ=0) fallback, and the leading embedded as an editable `BambuStudioShape`
-- [x] **Two browser GUIs**: `filament/gui.py` (3 tabs — Calibrate / Mixture /
+- [x] **Two browser GUIs**: `filament_gui.py` (3 tabs — Calibrate / Mixture /
       Colour LUT with a filament picker, σ preview slider, hue/sat/bright tuning, and
       **reachable-colour palette export** to .gpl/.aco/PNG) and `glass_gui.py`
       (image → panes → printable 3MF); both bilingual (EN + 简体中文), showing the
@@ -334,11 +334,11 @@ filament/calibration/
 
 ```bash
 # 1. calibrate each filament (one white shot; auto-stored in calibration/<name>/)
-python3 filament/analyze_calibration.py analyze --layout filament/pad/layout.json \
+python3 scripts/analyze_calibration.py analyze --layout filament/pad/layout.json \
     --name red --white photo/red-w.dng --layer-mm 0.2
 # 2. calibrate a spanning set of pairs (auto-stored in calibration/mix/<A>+<B>/)
-python3 filament/mixture.py fit --layout filament/mixpad/layout.json --white photo/rg.dng \
+python3 scripts/mixture.py fit --layout filament/mixpad/layout.json --white photo/rg.dng \
     --a red=filament/calibration/red/calibration.json --b green=filament/calibration/green/calibration.json
 # 3. build the LUT + gamut (reads the whole calibration root, no paths)
-python3 filament/solve_recipe.py lut --match ff8800,3366cc
+python3 scripts/solve_recipe.py lut --match ff8800,3366cc
 ```

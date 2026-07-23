@@ -13,7 +13,7 @@ map to the same recipe merge, and colours the palette can't reach show a high dE
 (add the missing filament).  A fixed thickness keeps the panel flat (colour comes
 from the sub-layer mix, not from varying height).
 
-    python3 filament/svg_to_3mf.py --frag-dir sample1_fragments \
+    python3 scripts/svg_to_3mf.py --frag-dir sample1_fragments \
         --cal-root filament/calibration --thickness 1.6 --out panel.3mf
 """
 import argparse

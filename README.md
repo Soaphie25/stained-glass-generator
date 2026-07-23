@@ -27,7 +27,7 @@ each shows the underlying CLI command plus live previews:
 
 ```bash
 python3 glass_gui.py       # image → panes → printable 3MF   → http://127.0.0.1:8010
-python3 filament/gui.py    # calibrate filaments → LUT/gamut  → http://127.0.0.1:8000
+python3 filament_gui.py    # calibrate filaments → LUT/gamut  → http://127.0.0.1:8000
 ```
 
 ## 3D-printed result
@@ -41,7 +41,7 @@ color panes come through just like real stained glass:
 
 ## Examples
 
-Generated with `python3 png_to_stained_glass_svg.py <input>.png --preview`.
+Generated with `python3 scripts/png_to_stained_glass_svg.py <input>.png --preview`.
 Click any image to view it at full resolution.
 
 ### Sample 1
@@ -90,7 +90,7 @@ sub-layer mix — then the panes are extruded and assembled into **one Bambu 3MF
 
 ```bash
 # after calibrating your filaments (see filament/README.md):
-python3 filament/svg_to_3mf.py --frag-dir myimage_fragments \
+python3 scripts/svg_to_3mf.py --frag-dir myimage_fragments \
     --cal-root filament/calibration --out panel.3mf \
     --leading myimage_leading.svg          # embed the came on top (optional)
 ```
@@ -137,7 +137,7 @@ pip install rawpy            # optional: decode RAW (DNG/ARW/…) calibration ph
 ## Usage
 
 ```bash
-python3 png_to_stained_glass_svg.py input.png [options]
+python3 scripts/png_to_stained_glass_svg.py input.png [options]
 ```
 
 ### Examples
@@ -145,13 +145,13 @@ python3 png_to_stained_glass_svg.py input.png [options]
 Basic (12 colors, auto tiered leading):
 
 ```bash
-python3 png_to_stained_glass_svg.py portrait.png
+python3 scripts/png_to_stained_glass_svg.py portrait.png
 ```
 
 A figure with a dark garment, 4 colors, exact came widths, smoother curves:
 
 ```bash
-python3 png_to_stained_glass_svg.py figure.png \
+python3 scripts/png_to_stained_glass_svg.py figure.png \
     --num-colors 4 \
     --tier-thin 0.4 --tier-bold 0.8 \
     --black-block-mm 3 \
@@ -163,7 +163,7 @@ Tune how black is split into thin *leading* vs solid black *glass*:
 ```bash
 # Lower --black-block-mm so a thick region (e.g. a sleeve) becomes a solid
 # black GLASS pane ringed by a bold came, instead of thin leading lines.
-python3 png_to_stained_glass_svg.py photo.jpg --black-block-mm 3
+python3 scripts/png_to_stained_glass_svg.py photo.jpg --black-block-mm 3
 ```
 
 ---
@@ -248,7 +248,7 @@ python3 png_to_stained_glass_svg.py photo.jpg --black-block-mm 3
 | `--smooth-tolerance PX` | `1.2` | Ring smoothing. |
 | `--connectivity 4\|8` | `8` | Pixel connectivity for components. |
 
-Run `python3 png_to_stained_glass_svg.py --help` for the complete list.
+Run `python3 scripts/png_to_stained_glass_svg.py --help` for the complete list.
 
 ---
 

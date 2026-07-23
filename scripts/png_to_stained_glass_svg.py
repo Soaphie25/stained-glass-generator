@@ -22,7 +22,7 @@ by default and the SVGs carry physical mm units):
      or quantised into N groups (``--fragment-color quantized``).
 
 Usage:
-    python3 png_to_stained_glass_svg.py input.png [options]
+    python3 scripts/png_to_stained_glass_svg.py input.png [options]
 """
 
 import argparse

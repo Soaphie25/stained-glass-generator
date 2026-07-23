@@ -26,11 +26,11 @@ Because we don't have a real printed pad yet, the primary entry point is a SELF-
 that renders synthetic photos from a known ground-truth filament and checks the
 analyser recovers it:
 
-    python3 filament/analyze_calibration.py selftest --out-dir /tmp/cal
+    python3 scripts/analyze_calibration.py selftest --out-dir /tmp/cal
 
 Real use, once you have photos:
 
-    python3 filament/analyze_calibration.py analyze --layout filament/pad/layout.json \
+    python3 scripts/analyze_calibration.py analyze --layout filament/pad/layout.json \
         --name "PolyTerra Teal" \
         --white white.jpg --red red.jpg --green green.jpg --blue blue.jpg \
         --out-dir filament/cal_polyterra_teal
@@ -1236,8 +1236,8 @@ def run_selftest(out_dir, tol=0.08):
 def _load_or_make_layout(out_dir):
     """Use an existing pad layout if present, else generate a default one."""
     here = os.path.dirname(os.path.abspath(__file__))
-    for cand in (os.path.join(out_dir, "layout.json"),
-                 os.path.join(here, "pad", "layout.json")):
+    pad_layout = os.path.join(os.path.dirname(here), "filament", "pad", "layout.json")
+    for cand in (os.path.join(out_dir, "layout.json"), pad_layout):
         if os.path.exists(cand):
             with open(cand) as f:
                 return json.load(f)
@@ -1248,7 +1248,8 @@ def _load_or_make_layout(out_dir):
         screen_w_mm=64.0, screen_h_mm=138.0, margin_mm=3.0, step_mm=0.1,
         max_mm=2.0, cols=4, cell_fill=0.7, min_cell_mm=6.0, edge_mm=2.0,
         header_mm=9.0, base_plate_mm=0.4, marker_mm=6.0,
-        marker_inset_mm=1.0, marker_h_mm=0.4, marker_gap_mm=1.5)
+        marker_inset_mm=1.0, marker_h_mm=0.4, marker_gap_mm=1.5,
+        black_markers=True)     # selftest renders detectable black corner markers
     layout, _, _ = mk.build_layout(ns)
     return layout
 

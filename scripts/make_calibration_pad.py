@@ -470,8 +470,8 @@ def main(argv=None):
                    help="output folder (default: <script dir>/pad)")
     opts = p.parse_args(argv)
 
-    out_dir = opts.out_dir or os.path.join(os.path.dirname(
-        os.path.abspath(__file__)), "pad")
+    out_dir = opts.out_dir or os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "filament", "pad")
     os.makedirs(out_dir, exist_ok=True)
 
     layout, body_boxes, marker_boxes = build_layout(opts)

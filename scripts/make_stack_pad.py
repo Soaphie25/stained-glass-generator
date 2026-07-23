@@ -198,8 +198,8 @@ def main(argv=None):
     if not opts.stacks:
         opts.stacks = ["red=0.2,green=0.8", "red=0.4,green=0.6", "red=0.8,green=0.2"]
 
-    out_dir = opts.out_dir or os.path.join(os.path.dirname(
-        os.path.abspath(__file__)), "stackpad")
+    out_dir = opts.out_dir or os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "filament", "stackpad")
     os.makedirs(out_dir, exist_ok=True)
 
     layout, fils, slot, black_slot, boxes_by_slot = build_layout(opts)

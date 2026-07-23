@@ -23,7 +23,7 @@ calibrating pairs that share a filament (A-B, B-C) lets us predict an unseen pai
 Posterior override: if a pair has its own measured ramp, its DIRECT fit is kept
 and preferred over the generalized prediction when they disagree.
 
-    python3 filament/mixture.py selftest
+    python3 scripts/mixture.py selftest
 """
 import argparse
 import sys
