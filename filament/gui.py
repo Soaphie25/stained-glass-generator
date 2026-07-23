@@ -612,7 +612,7 @@ PAGE = """<!doctype html><html><head><meta charset=utf-8>
     <label style="min-width:40px">B</label><select id=gr_b></select>
     <label style="min-width:90px">thickness 厚度</label><input type=number id=gr_thk value=1.6 step=0.1 style="width:70px">
     <button class=go onclick="gradPrev(false)" style="margin-left:6px">Preview 预览</button></div>
-  <div class=row><label>σ scatter 散射</label><input type=range id=gr_sig min=-2 max=2 step=0.05 value=0 style="width:240px;vertical-align:middle" oninput="gradPrev(true)"> <span id=gr_sigv>0.00</span>
+  <div class=row><label>σ scatter 散射</label><input type=range id=gr_sig min=-4 max=8 step=0.05 value=0 style="width:220px;vertical-align:middle" oninput="sigFromSlider()"> <input type=number id=gr_signum step=0.1 value=0 style="width:66px" title="exact σ (drag the bar or type; the bar auto-widens to the fitted value) 精确 σ（可拖动或输入，滑条自动扩展到拟合值）" oninput="sigFromNum()">
     &nbsp;<button onclick="saveSig()">Save σ 保存</button> <span id=gr_st style="color:#2a7;font-size:12px"></span></div>
   <div class=row style="color:#888;font-size:12px">Preview any pair's predicted ramp (incl. generalizable 'g' pairs, no ramp printed). Drag σ if the 'g' gradient looks off; Save writes it as a direct pair. 预览任意组合的预测渐变（含可泛化 g 对，无需打印）；如不准可拖动 σ 并保存。</div>
   <div id=gr_img></div>
@@ -751,16 +751,20 @@ function renderCal(res,target){
  if(res.images)res.images.forEach(p=>h+=img(p));
  document.getElementById(target).innerHTML=h;
 }
+function sigExpand(v){const s=document.getElementById('gr_sig');v=parseFloat(v);if(isNaN(v))return;
+ if(v>parseFloat(s.max))s.max=Math.ceil(v)+2;if(v<parseFloat(s.min))s.min=Math.floor(v)-2;}
+function sigFromSlider(){const v=document.getElementById('gr_sig').value;document.getElementById('gr_signum').value=parseFloat(v).toFixed(2);gradPrev(true);}
+function sigFromNum(){const v=document.getElementById('gr_signum').value;sigExpand(v);document.getElementById('gr_sig').value=v;gradPrev(true);}
 async function gradPrev(useSlider){const a=document.getElementById('gr_a').value,b=document.getElementById('gr_b').value;
  if(!a||!b||a===b){document.getElementById('gr_img').innerHTML='<span style="color:#a33">pick two different filaments 选两种不同耗材</span>';return;}
  const body={a,b,thickness:document.getElementById('gr_thk').value};
- if(useSlider){const sv=document.getElementById('gr_sig').value;document.getElementById('gr_sigv').textContent=parseFloat(sv).toFixed(2);body.sigma=sv;}
+ if(useSlider){body.sigma=document.getElementById('gr_signum').value;}   // number = source of truth (unclamped)
  const r=await post('/gradient',body);
  if(!r.ok){document.getElementById('gr_img').innerHTML='<div class=warn>'+(r.stderr||'')+'</div>';return;}
- if(!useSlider){document.getElementById('gr_sig').value=r.sigma_hint;document.getElementById('gr_sigv').textContent=parseFloat(r.sigma_hint).toFixed(2);}
+ if(!useSlider){const h=parseFloat(r.sigma_hint);sigExpand(h);document.getElementById('gr_sig').value=h;document.getElementById('gr_signum').value=h.toFixed(2);}
  document.getElementById('gr_img').innerHTML='<div style="color:#555;font-size:12px">'+r.source+'</div>'+img(r.image);}
 async function saveSig(){const a=document.getElementById('gr_a').value,b=document.getElementById('gr_b').value;
- const r=await post('/savesigma',{a,b,sigma:document.getElementById('gr_sig').value,thickness:document.getElementById('gr_thk').value});
+ const r=await post('/savesigma',{a,b,sigma:document.getElementById('gr_signum').value,thickness:document.getElementById('gr_thk').value});
  document.getElementById('gr_st').textContent=r.ok?('✓ saved '+r.pair+' σ='+r.sigma):(r.stderr||'');if(r.ok)loadFils();}
 async function loadMix(){const p=document.getElementById('mv_pair').value;if(!p)return;
  const r=await post('/loadmix',{pair:p});let h='';
