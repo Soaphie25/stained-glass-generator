@@ -1498,7 +1498,8 @@ def compute_partition_arcs(labels, simplify_tol, fit_tol, min_simplify=2.0,
     return arcs, arc_w, interior, interior_w
 
 
-def fragments_to_colored_paths(frag_rgb, labels, smoothed_arcs, clip_poly, px_mm):
+def fragments_to_colored_paths(frag_rgb, labels, smoothed_arcs, clip_poly, px_mm,
+                               glass_mask=None):
     """Vectorise the glass panes as an EXACT planar partition.
 
     Faces are rebuilt with ``shapely.polygonize`` from the shared smoothed
@@ -1571,11 +1572,72 @@ def fragments_to_colored_paths(frag_rgb, labels, smoothed_arcs, clip_poly, px_mm
                     hexc = min(emitted, key=lambda gc: g.distance(gc[0]))[1]
                 emitted.append((g, hexc))
 
-    items = []
+    # VERIFY vs the source glass pixels: a small pane can be dropped by the min-pane
+    # merge (its px area falls under the up-scaled threshold at a small --max-size),
+    # and if it was ringed by black leading it can't merge into a glass neighbour --
+    # leaving a HOLE (e.g. water droplets inside a big wave at 75 mm).  Rasterise the
+    # panes, find glass pixels no pane covers, and fill each real feature with its
+    # source colour.  Erosion drops 1px rasterisation seams so only true gaps fill.
+    if glass_mask is not None and emitted:
+        cov = np.zeros(labels.shape, np.uint8)
+        for g, _ in emitted:
+            for poly in _flatten_polys([g]):
+                ext = np.asarray(poly.exterior.coords).round().astype(np.int32)
+                if len(ext) >= 3:
+                    cv2.fillPoly(cov, [ext], 1)
+                for it in poly.interiors:
+                    ints = np.asarray(it.coords).round().astype(np.int32)
+                    if len(ints) >= 3:
+                        cv2.fillPoly(cov, [ints], 0)
+        uncovered = glass_mask & (cov == 0)
+        core = ndimage.binary_erosion(uncovered)          # kill 1px seams
+        lbl, n = label(uncovered, connectivity=2, return_num=True)
+        keep = set(np.unique(lbl[core])) - {0}
+        missed = 0
+        for i in keep:
+            comp = lbl == i
+            a = int(comp.sum())
+            if a < 4:
+                continue
+            missed += a
+            ys, xs = np.where(comp)
+            col = np.median(frag_rgb[ys, xs], axis=0).astype(int)
+            hexc = "#%02x%02x%02x" % (int(col[0]), int(col[1]), int(col[2]))
+            cnts, _ = cv2.findContours(comp.astype(np.uint8), cv2.RETR_EXTERNAL,
+                                       cv2.CHAIN_APPROX_SIMPLE)
+            for cnt in cnts:
+                pts = cnt.reshape(-1, 2).astype(float)
+                if len(pts) < 3:
+                    continue
+                g = Polygon(pts).buffer(0)
+                for gg in _flatten_polys([g]):
+                    if gg.area >= 0.5:
+                        emitted.append((gg, hexc))
+        if missed:
+            sys.stderr.write("note: %d glass px were left uncovered by the panes "
+                             "(small features below the min-pane size at this "
+                             "scale) -- filled them so the panel has no holes\n"
+                             % missed)
+
+    # Dissolve same-colour faces: an annular face whose hole is filled by a
+    # SAME-colour island (e.g. a white droplet inside a white wave) emits two
+    # coincident, equal-area rings -- which read back as a double HOLE because
+    # neither strictly contains the other.  Unioning per colour cancels them into
+    # a solid, so the droplet is no longer a hole.  (Different-colour islands stay
+    # in their own file and are unaffected.)
+    from collections import defaultdict
+    by_colour = defaultdict(list)
     for g, hexc in emitted:
-        d = _polygon_polyline_d(g, px_mm)
-        if d:
-            items.append((g.area, d, hexc))
+        by_colour[hexc].append(g)
+    items = []
+    for hexc, gs in by_colour.items():
+        merged = unary_union(gs) if len(gs) > 1 else gs[0]
+        for g in _flatten_polys([merged]):
+            if g.area < 0.5:
+                continue
+            d = _polygon_polyline_d(g, px_mm)
+            if d:
+                items.append((g.area, d, hexc))
     items.sort(key=lambda t: -t[0])
     return [(d, c) for (_, d, c) in items]
 
@@ -2813,7 +2875,7 @@ def main(args=None):
         # --- SVG 3: glass fragments (faces from the SAME shared arcs) ----
         frag_svg_path = opts.fragments_svg or _in_dir("_fragments.svg")
         colored = fragments_to_colored_paths(frag_rgb, labels, arcs, clip_poly,
-                                             opts.px_mm)
+                                             opts.px_mm, glass_mask=glass)
         frag_svg = write_multicolor_svg(colored, width_mm, height_mm)
         with open(frag_svg_path, "w") as f:
             f.write(frag_svg)
