@@ -2093,13 +2093,15 @@ def leading_strokes_from_arcs(smoothed_arcs, black, min_line_width, clip_poly,
                     bold_px = max(bold_px, thin_px * (hi / max(lo, 1e-6)))
                 else:
                     bold_px = max(bold_px, min_line_width)
-            # PURE width tiering: a stroke is bold iff its measured width is in the
-            # bold cluster.  (An earlier length/block "bias" boosted long or
-            # block-adjacent lines toward bold, but that pulled thin walls into the
-            # bold tier -- e.g. a thin wall next to a bold door outline -- so it is
-            # gone; the tiers now follow the widths that are clearly defined in the
-            # input.)
-            out_px = np.where(base <= lo + 1e-9, thin_px, bold_px)
+            # Width tiering: a stroke is bold iff its measured width is in the bold
+            # cluster.  The old LENGTH bias (long line -> bold) is gone -- it pulled
+            # thin walls into the bold tier.  The BLOCK bias stays: a line running
+            # ALONGSIDE a pure-black pane measures thin (the black block absorbs part
+            # of the seam) but is that pane's outline, so force it bold.
+            thin_mask = base <= lo + 1e-9
+            if block_mask is not None and (~thin_mask).any():
+                thin_mask = thin_mask & (blkfrac < 0.5)
+            out_px = np.where(thin_mask, thin_px, bold_px)
             bold_w_mm = bold_px * px_mm
         else:
             out_px = widths * width_scale
