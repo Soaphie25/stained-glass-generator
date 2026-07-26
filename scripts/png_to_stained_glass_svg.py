@@ -2058,9 +2058,11 @@ def leading_strokes_from_arcs(smoothed_arcs, black, min_line_width, clip_poly,
                 if d:
                     items.append((d, width * px_mm))
             else:
-                if seg_len < cw:
-                    continue
-                auto_jobs.append((coords, cw_raw, chain_len, blk_frac))
+                # keep EVERY segment for tiering (dropping short stubs here, with a
+                # min_line_width-inflated cw, would change the segment set the tier
+                # threshold sees -> size-dependent misclassification); the stub drop
+                # happens AFTER tiering, against each stroke's FINAL width.
+                auto_jobs.append((coords, cw_raw, chain_len, blk_frac, seg_len))
 
     # Measured-width modes: 'tier' snaps the per-stroke widths to TWO tiers
     # (bold foreground vs thin background) so a thin line is never blended up
@@ -2069,9 +2071,9 @@ def leading_strokes_from_arcs(smoothed_arcs, black, min_line_width, clip_poly,
     if uniform_mm > 0:
         bold_w_mm = uniform_mm
     if auto_jobs:
-        widths = np.array([wp for _, wp, _, _ in auto_jobs])
-        lengths = np.array([ln for _, _, ln, _ in auto_jobs])
-        blkfrac = np.array([bf for _, _, _, bf in auto_jobs])
+        widths = np.array([wp for _, wp, _, _, _ in auto_jobs])
+        lengths = np.array([ln for _, _, ln, _, _ in auto_jobs])
+        blkfrac = np.array([bf for _, _, _, bf, _ in auto_jobs])
         if tier:
             base = _two_width_tiers(widths)
             lo, hi = float(base.min()), float(base.max())
@@ -2091,29 +2093,20 @@ def leading_strokes_from_arcs(smoothed_arcs, black, min_line_width, clip_poly,
                     bold_px = max(bold_px, thin_px * (hi / max(lo, 1e-6)))
                 else:
                     bold_px = max(bold_px, min_line_width)
-            thin_mask = base <= lo + 1e-9
-            if hi > lo + 1e-9 and (~thin_mask).any() and thin_mask.any():
-                # Bias a stroke's effective width UP before the bold cut, so a
-                # borderline line leans BOLD when it is a main/foreground outline:
-                #  - LENGTH: a long continuous outline (vs short thin splitters).
-                #  - BLOCK adjacency: a line running alongside a black block is a
-                #    garment/foreground outline whose black is partly absorbed by
-                #    the block, so it measures thin (the "shoulder above the
-                #    sleeve" case).
-                thr = float(np.sqrt(widths[thin_mask].max()
-                                    * widths[~thin_mask].min()))
-                l90 = float(np.percentile(lengths, 90))
-                ln_n = np.clip(lengths / max(l90, 1e-6), 0.0, 1.0)
-                eff = widths * (1.0 + LENGTH_TIER_BIAS * ln_n
-                                + BLOCK_TIER_BIAS * blkfrac)
-                out_px = np.where(eff >= thr, bold_px, thin_px)
-            else:
-                out_px = np.where(thin_mask, thin_px, bold_px)
+            # PURE width tiering: a stroke is bold iff its measured width is in the
+            # bold cluster.  (An earlier length/block "bias" boosted long or
+            # block-adjacent lines toward bold, but that pulled thin walls into the
+            # bold tier -- e.g. a thin wall next to a bold door outline -- so it is
+            # gone; the tiers now follow the widths that are clearly defined in the
+            # input.)
+            out_px = np.where(base <= lo + 1e-9, thin_px, bold_px)
             bold_w_mm = bold_px * px_mm
         else:
             out_px = widths * width_scale
             bold_w_mm = float(np.percentile(out_px, 90)) * px_mm
-        for (coords, _, _, _), gw in zip(auto_jobs, out_px):
+        for (coords, _, _, _, seg_len), gw in zip(auto_jobs, out_px):
+            if seg_len < gw:                         # stub shorter than its came = dot
+                continue
             d = stroke_d(coords)
             if d:
                 items.append((d, gw * px_mm))
