@@ -228,9 +228,9 @@ python3 scripts/png_to_stained_glass_svg.py photo.jpg --black-block-mm 3
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--no-link-lines` | off | Disable arc-linking. Linking is **on by default**: it chains a line broken by many crossings into one stroke so it keeps a consistent width and tiers correctly (a bold outline stays bold). Turn it off only for very simple line-art where per-arc strokes are wanted. |
-| `--link-angle DEG` | `35` | At a junction, two arcs join into one continuous line only if their tangents are within this angle of straight (bigger = corner, chain stops). |
-| `--link-width-ratio R` | `1.7` | Max width ratio to link two arcs as the same line. |
+| `--link-lines` | off | **Advanced**: chain seam arcs into continuous strokes through junctions. Off by default — per-arc strokes (each tiered by its own measured width) are the most consistent. Turn it on for busy line-work where you want a line broken by many crossings chained into one stroke. The two options below tune it. |
+| `--link-angle DEG` | `35` | (with `--link-lines`) At a junction, two arcs join into one continuous line only if their tangents are within this angle of straight (bigger = corner, chain stops). |
+| `--link-width-ratio R` | `1.7` | (with `--link-lines`) Max width ratio to link two arcs as the same line. |
 | `--smooth-curves` | off | Emit leading as smooth Bézier curves (rounds linked junctions). Best for sparse, curvy art; the default polyline is crisper on dense line-work. |
 
 ### Black blocks (solid black glass)

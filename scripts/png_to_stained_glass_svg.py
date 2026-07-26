@@ -2106,8 +2106,12 @@ def leading_strokes_from_arcs(smoothed_arcs, black, min_line_width, clip_poly,
         else:
             out_px = widths * width_scale
             bold_w_mm = float(np.percentile(out_px, 90)) * px_mm
-        for (coords, _, _, _, seg_len), gw in zip(auto_jobs, out_px):
-            if seg_len < gw:                         # stub shorter than its came = dot
+        for (coords, cw_raw, _, _, seg_len), gw in zip(auto_jobs, out_px):
+            # drop a stub only if it's shorter than its MEASURED width (a fat dot,
+            # not a line).  Use the measured width, not the (possibly ratio-boosted)
+            # output width -- else short segments of a bold outline get deleted and
+            # the outline breaks up ("bleeds" into the neighbour).
+            if seg_len < max(cw_raw, min_line_width):
                 continue
             d = stroke_d(coords)
             if d:
@@ -2519,12 +2523,13 @@ def parse_command_line(args):
     p.add_argument("--tier-bold", type=float, default=0.0,
                    help="in 'tier' mode, force the BOLD-tier width to exactly "
                         "this many mm (0 = auto)")
-    p.add_argument("--no-link-lines", action="store_true",
-                   help="disable arc-linking (emit each seam arc as its own stroke). "
-                        "Linking is ON by default: it chains a line broken by many "
-                        "crossings into one stroke so it keeps a consistent width and "
-                        "tiers correctly (a bold outline stays bold). Turn it off only "
-                        "for very simple line-art where per-arc strokes are wanted")
+    p.add_argument("--link-lines", action="store_true",
+                   help="ADVANCED: link seam arcs into continuous strokes through "
+                        "junctions. OFF by default (each arc is its own stroke, tiered "
+                        "by its own measured width -- the most consistent result). "
+                        "Turn it on for busy line-work where you want a line broken by "
+                        "many crossings chained into one stroke; --link-angle / "
+                        "--link-width-ratio tune it")
     p.add_argument("--link-angle", type=float, default=35.0,
                    help="slope threshold (deg) for linking arcs into one continuous "
                         "line at a junction: two ends join only if their tangents are "
@@ -2846,7 +2851,7 @@ def main(args=None):
                 opts.fit_tolerance, uniform_mm, opts.smooth_curves,
                 opts.line_width_scale, width_tier, lead_w,
                 opts.tier_thin, opts.tier_bold,
-                opts.link_angle, opts.link_width_ratio, not opts.no_link_lines,
+                opts.link_angle, opts.link_width_ratio, opts.link_lines,
                 black_block if opts.black_block_mm > 0 else None)
             # Uncovered black (lone lines, texture, dots) -> skeleton strokes +
             # filled blobs, so nothing is dropped or doubled.
