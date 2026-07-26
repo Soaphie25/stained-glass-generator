@@ -1919,7 +1919,7 @@ def leading_strokes_from_arcs(smoothed_arcs, black, min_line_width, clip_poly,
                               width_scale=1.0, tier=True, arc_widths=None,
                               tier_thin_mm=0.0, tier_bold_mm=0.0,
                               link_angle_deg=35.0, link_width_ratio=1.7,
-                              block_mask=None):
+                              link=False, block_mask=None):
     """Leading from the LEADED partition arcs.  One constant width per stroke.
 
     Returns ``(stroke_items, ribbon_d)`` (ribbon_d kept for the caller's API but
@@ -2001,10 +2001,10 @@ def leading_strokes_from_arcs(smoothed_arcs, black, min_line_width, clip_poly,
     # scaled by `up`, exceeds every measured black line), collapsing thin+bold to
     # one width.
     lead_w = [max(float(arc_widths[i]), 0.5) for i in leaded_idx]
-    if len(lead_arcs) > 1:
+    if link and len(lead_arcs) > 1:                   # advanced: chain arcs through
         chains = _link_arc_strokes(lead_arcs, lead_w, angle_deg=link_angle_deg,
-                                   width_ratio=link_width_ratio)
-    else:
+                                   width_ratio=link_width_ratio)  # junctions
+    else:                                             # default: each arc = one stroke
         chains = [[(i, False)] for i in range(len(lead_arcs))]
 
     def _merge_chain(chain):
@@ -2524,15 +2524,21 @@ def parse_command_line(args):
     p.add_argument("--tier-bold", type=float, default=0.0,
                    help="in 'tier' mode, force the BOLD-tier width to exactly "
                         "this many mm (0 = auto)")
+    p.add_argument("--link-lines", action="store_true",
+                   help="ADVANCED: link seam arcs into continuous strokes through "
+                        "junctions, so one line broken by many crossings prints at a "
+                        "consistent width (and, with --smooth-curves, one smooth "
+                        "curve). OFF by default -- turn it on for busy/complicated "
+                        "line-work; --link-angle/--link-width-ratio only apply then")
     p.add_argument("--link-angle", type=float, default=35.0,
-                   help="slope threshold (deg) for linking arcs into one "
-                        "continuous line at a junction: two ends join only if "
-                        "their tangents are within this angle of a straight line "
+                   help="(with --link-lines) slope threshold (deg) for linking arcs "
+                        "into one continuous line at a junction: two ends join only "
+                        "if their tangents are within this angle of a straight line "
                         "(bigger difference = corner, not one line; default 35)")
     p.add_argument("--link-width-ratio", type=float, default=1.7,
-                   help="max width ratio for linking two arcs into one line at a "
-                        "junction (arcs of very different width are not the same "
-                        "line; default 1.7)")
+                   help="(with --link-lines) max width ratio for linking two arcs "
+                        "into one line at a junction (arcs of very different width "
+                        "are not the same line; default 1.7)")
     p.add_argument("--smooth-curves", action="store_true",
                    help="emit leading as smooth Bezier curves instead of the raw "
                         "arc polyline (smoother look on curvy art; off by default)")
@@ -2845,7 +2851,7 @@ def main(args=None):
                 opts.fit_tolerance, uniform_mm, opts.smooth_curves,
                 opts.line_width_scale, width_tier, lead_w,
                 opts.tier_thin, opts.tier_bold,
-                opts.link_angle, opts.link_width_ratio,
+                opts.link_angle, opts.link_width_ratio, opts.link_lines,
                 black_block if opts.black_block_mm > 0 else None)
             # Uncovered black (lone lines, texture, dots) -> skeleton strokes +
             # filled blobs, so nothing is dropped or doubled.
