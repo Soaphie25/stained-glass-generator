@@ -291,7 +291,7 @@ PAGE = r"""<!doctype html><html><head><meta charset=utf-8>
    link-width-ratio <input type=number id=o_linkratio value=1.7 step=0.1 style="width:60px">
    &nbsp; <label><input type=checkbox id=o_smooth> smooth-curves 平滑曲线铅线</label>
    <label><input type=checkbox id=o_mergelead> merge-leading 合并铅线</label>
-   <label title="ADVANCED: chain seam arcs into continuous strokes through junctions — off by default (per-arc is most consistent); turn on for busy line-work"><input type=checkbox id=o_linklines> link-lines 连接铅线（高级）</label></div>
+   &nbsp; leading 描边 <select id=o_leadmode title="Simple: per-arc strokes, most consistent (default). Advanced: chain arcs into continuous lines through junctions — for busy line-work."><option value="">Simple 简单</option><option value="adv">Advanced 高级（连接铅线）</option></select></div>
  </details>
  <div class=row><button class=go onclick="convert()">Convert 转换</button> <span id=c_status></span></div>
 </fieldset>
@@ -329,7 +329,7 @@ function svgOpts(){const m=$('o_leadmode').value;
   'alpha-min':$('o_alpha').value,'link-angle':$('o_linkangle').value,'link-width-ratio':$('o_linkratio').value};
  if(m==='tier'){o['tier-bold']=$('o_tierbold').value;o['tier-thin']=$('o_tierthin').value;}
  return o;}
-function svgFlags(){return {'smooth-curves':$('o_smooth').checked,'merge-leading':$('o_mergelead').checked,'link-lines':$('o_linklines').checked};}
+function svgFlags(){return {'smooth-curves':$('o_smooth').checked,'merge-leading':$('o_mergelead').checked,'link-lines':$('o_leadmode').value==='adv'};}
 let ALLFIL=[], SEL=[], SLOTS=4, CONVERTED=false;
 function params(){return {depth:$('o_depth').value,size:$('o_size').value,colors:$('o_colors').value,max_delta:$('o_maxdelta').value,max_delta_2:$('o_maxdelta2').value,filaments:SEL,no_sigma:$('o_nosigma').checked,leading:$('o_leading').checked,lead_height:$('o_leadh').value};}
 async function lut(){const r=await post('/lutstatus',{});
