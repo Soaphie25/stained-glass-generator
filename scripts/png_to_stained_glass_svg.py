@@ -1995,7 +1995,12 @@ def leading_strokes_from_arcs(smoothed_arcs, black, min_line_width, clip_poly,
     leaded_idx = [i for i, s in enumerate(smoothed_arcs)
                   if leaded(s) and not on_block_edge(s)]
     lead_arcs = [np.asarray(smoothed_arcs[i], dtype=float) for i in leaded_idx]
-    lead_w = [max(float(arc_widths[i]), min_line_width) for i in leaded_idx]
+    # Keep the RAW measured widths here (floor only against zero) -- the
+    # min_line_width floor is applied AFTER tiering.  Clamping to min_line_width
+    # now would erase all width variation at a small --max-size (where the floor,
+    # scaled by `up`, exceeds every measured black line), collapsing thin+bold to
+    # one width.
+    lead_w = [max(float(arc_widths[i]), 0.5) for i in leaded_idx]
     if len(lead_arcs) > 1:
         chains = _link_arc_strokes(lead_arcs, lead_w, angle_deg=link_angle_deg,
                                    width_ratio=link_width_ratio)
@@ -2023,8 +2028,8 @@ def leading_strokes_from_arcs(smoothed_arcs, black, min_line_width, clip_poly,
     items = []
     auto_jobs = []          # (coords, chain-width-px, chain-len-px)
     for chain in chains:
-        cw = max(float(np.median([lead_w[ai] for ai, _ in chain])),
-                 min_line_width)
+        cw_raw = float(np.median([lead_w[ai] for ai, _ in chain]))   # for tiering
+        cw = max(cw_raw, min_line_width)                             # for geometry
         coords_full, jidx = _merge_chain(chain)
         if len(coords_full) < 2:
             continue
@@ -2055,7 +2060,7 @@ def leading_strokes_from_arcs(smoothed_arcs, black, min_line_width, clip_poly,
             else:
                 if seg_len < cw:
                     continue
-                auto_jobs.append((coords, cw, chain_len, blk_frac))
+                auto_jobs.append((coords, cw_raw, chain_len, blk_frac))
 
     # Measured-width modes: 'tier' snaps the per-stroke widths to TWO tiers
     # (bold foreground vs thin background) so a thin line is never blended up
@@ -2075,6 +2080,17 @@ def leading_strokes_from_arcs(smoothed_arcs, black, min_line_width, clip_poly,
                 else lo * width_scale
             bold_px = (tier_bold_mm / px_mm) if tier_bold_mm > 0 \
                 else hi * width_scale
+            # Floor to the min printable came -- but keep the two tiers DISTINCT.
+            # On a small panel both scaled tiers can fall below min_line_width and
+            # would floor to the SAME width (all leading looks equal); scale the
+            # bold tier up by the measured thin:bold ratio so tiering stays visible.
+            if tier_thin_mm <= 0 and tier_bold_mm <= 0 and hi > lo + 1e-9:
+                ratio = hi / max(lo, 1e-6)
+                thin_px = max(thin_px, min_line_width)
+                bold_px = max(bold_px, thin_px * ratio)
+            else:
+                thin_px = max(thin_px, min_line_width)
+                bold_px = max(bold_px, min_line_width)
             thin_mask = base <= lo + 1e-9
             if hi > lo + 1e-9 and (~thin_mask).any() and thin_mask.any():
                 # Bias a stroke's effective width UP before the bold cut, so a
