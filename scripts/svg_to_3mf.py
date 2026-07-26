@@ -487,10 +487,12 @@ def _print_table(m):
           % (len(rows), ngam, m["max_delta"]))
 
 
-def _leading_mesh(leading_svg, scale, H, z0, z1):
+def _leading_mesh(leading_svg, scale, H, z0, z1, clip=None):
     """Read the came SVG (stroked polylines), buffer each stroke to a ribbon, union,
     and extrude the result to a mesh raised z0..z1 -- so the leading sits ON TOP of
-    the panes, exactly on the shared seams."""
+    the panes, exactly on the shared seams.  ``clip`` (the pane footprint) trims the
+    perimeter came so the leading never sticks out past the glass -- otherwise the
+    outer half of the boundary came would push the panel's size past --max-size."""
     from shapely.geometry import LineString
     from shapely.ops import unary_union
     strokes = _read_leading(leading_svg)
@@ -504,6 +506,10 @@ def _leading_mesh(leading_svg, scale, H, z0, z1):
     if not ribbons:
         return None
     u = unary_union(ribbons)
+    if clip is not None:
+        u = u.intersection(clip)
+        if u.is_empty:
+            return None
     polys = list(u.geoms) if u.geom_type == "MultiPolygon" else [u]
     rings = []
     for g in polys:
@@ -551,8 +557,19 @@ def build_3mf(frag_dir, cal_root, out_path, thickness=1.6, max_delta=20.0,
 
     extra_files = None
     if leading_svg and os.path.isfile(leading_svg):   # embed the leading (came)
+        # pane footprint (in the scaled, pre-flip space of it["rings"]) -> clip the
+        # came so it can't stick out past the glass and inflate the panel size.
+        from shapely.geometry import Polygon as _Poly
+        from shapely.ops import unary_union as _uu
+        _pp = []
+        for it in items:
+            for p in nest_polygons(it["rings"]):
+                g = _Poly(p["outer"], list(p["holes"])).buffer(0)
+                if not g.is_empty:
+                    _pp.append(g)
+        footprint = _uu(_pp) if _pp else None
         lm = _leading_mesh(leading_svg, scale, H, thickness,
-                           thickness + lead_height_mm)
+                           thickness + lead_height_mm, clip=footprint)
         if lm and lm[1]:
             parts.append({"name": "leading", "mesh": lm, "slot": black_slot,
                           "svg_shape": {"name": "leading.svg",
