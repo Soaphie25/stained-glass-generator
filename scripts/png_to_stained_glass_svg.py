@@ -2076,21 +2076,21 @@ def leading_strokes_from_arcs(smoothed_arcs, black, min_line_width, clip_poly,
             base = _two_width_tiers(widths)
             lo, hi = float(base.min()), float(base.max())
             # exact mm overrides win (no width_scale); else measured*scale
-            thin_px = (tier_thin_mm / px_mm) if tier_thin_mm > 0 \
-                else lo * width_scale
-            bold_px = (tier_bold_mm / px_mm) if tier_bold_mm > 0 \
-                else hi * width_scale
-            # Floor to the min printable came -- but keep the two tiers DISTINCT.
-            # On a small panel both scaled tiers can fall below min_line_width and
-            # would floor to the SAME width (all leading looks equal); scale the
-            # bold tier up by the measured thin:bold ratio so tiering stays visible.
-            if tier_thin_mm <= 0 and tier_bold_mm <= 0 and hi > lo + 1e-9:
-                ratio = hi / max(lo, 1e-6)
+            thin_explicit, bold_explicit = tier_thin_mm > 0, tier_bold_mm > 0
+            thin_px = (tier_thin_mm / px_mm) if thin_explicit else lo * width_scale
+            bold_px = (tier_bold_mm / px_mm) if bold_explicit else hi * width_scale
+            # An EXPLICIT --tier-thin/--tier-bold is the user's choice -- honour it
+            # exactly, even below min_line_width (else 0.4mm thin would floor to the
+            # 0.6mm minimum and match a 0.6mm bold -> no tiering).  Only AUTO tiers
+            # are floored to the min printable came; when a floored thin meets an
+            # auto bold, keep them distinct via the measured thin:bold ratio.
+            if not thin_explicit:
                 thin_px = max(thin_px, min_line_width)
-                bold_px = max(bold_px, thin_px * ratio)
-            else:
-                thin_px = max(thin_px, min_line_width)
-                bold_px = max(bold_px, min_line_width)
+            if not bold_explicit:
+                if not thin_explicit and hi > lo + 1e-9:
+                    bold_px = max(bold_px, thin_px * (hi / max(lo, 1e-6)))
+                else:
+                    bold_px = max(bold_px, min_line_width)
             thin_mask = base <= lo + 1e-9
             if hi > lo + 1e-9 and (~thin_mask).any() and thin_mask.any():
                 # Bias a stroke's effective width UP before the bold cut, so a
