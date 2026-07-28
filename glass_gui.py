@@ -158,8 +158,13 @@ def _map(data):
 
 
 def _table(m):
+    import svg_to_3mf as V
     rows = []
     for it in sorted(m["items"], key=lambda x: -x["area"]):
+        if V._is_black_pane(it["hex"]):              # black pane -> printed in black
+            rows.append({"hex": it["hex"], "predicted": "111116",
+                         "recipe": "black 黑", "dE": 0, "out": False})
+            continue
         rec = m["rec_cache"][m["targets"][it["hex"]]]
         rows.append({"hex": it["hex"], "predicted": rec["predicted_hex"],
                      "recipe": " / ".join("%s %d%%" % (n, f) for n, f

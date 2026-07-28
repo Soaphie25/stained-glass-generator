@@ -499,6 +499,9 @@ def _print_table(m):
     print("-" * 56)
     ngam = 0
     for hexc, rec, area in sorted(rows, key=lambda r: -r[2]):
+        if _is_black_pane(hexc):                      # printed in black, not a mix
+            print("#%-8s %6.0f  %-28s %5s" % (hexc, area, "black", "-"))
+            continue
         mix = " / ".join("%s %d%%" % (n, f)
                          for n, f in zip(rec["filaments"], rec["fracs_pct"]))
         out = rec["delta_e"] > m["max_delta"]
