@@ -442,6 +442,17 @@ def _read_leading(path):
     return out
 
 
+def _is_black_pane(hexc):
+    """A pane meant to be BLACK: dark AND near-neutral.  Such a pane is printed in
+    black (opaque), not mapped to a transparent-filament mix.  A dark but SATURATED
+    colour (deep navy, wine) is a real transparent colour and is NOT treated black.
+    Catches near-black greys that quantise to e.g. #15191a or #27292a."""
+    hexc = hexc.lstrip("#")
+    r, g, b = (int(hexc[2 * k:2 * k + 2], 16) for k in range(3))
+    mx, mn = max(r, g, b), min(r, g, b)
+    return mx < 55 and (mx - mn) < 28
+
+
 def render_preview(m, path, ppm=6.0, leading_svg=None, ss=3):
     """Gamut preview PNG: each pane painted its PRINTABLE recipe colour (what the
     panel will actually look like), with the black leading drawn on top if given
@@ -458,9 +469,7 @@ def render_preview(m, path, ppm=6.0, leading_svg=None, ss=3):
     d = ImageDraw.Draw(img)
     panes = []
     for it in m["items"]:
-        src = it["hex"]                                # the pane's source colour
-        sr, sg, sb = (int(src[2 * k:2 * k + 2], 16) for k in range(3))
-        if max(sr, sg, sb) < 40:                       # BLACK glass pane -> show black
+        if _is_black_pane(it["hex"]):                  # BLACK glass pane -> show black
             rgb = (18, 18, 22)                         # (printed in black, not a mix)
         else:
             hx = m["rec_cache"][m["targets"][it["hex"]]]["predicted_hex"]
@@ -554,8 +563,7 @@ def build_3mf(frag_dir, cal_root, out_path, thickness=1.6, max_delta=20.0,
         if not t:
             continue
         part = {"name": "c_%s" % it["hex"], "mesh": (v, t)}
-        sr, sg, sb = (int(it["hex"][2 * k:2 * k + 2], 16) for k in range(3))
-        if max(sr, sg, sb) < 40:                     # BLACK glass pane -> black slot
+        if _is_black_pane(it["hex"]):                # BLACK glass pane -> black slot
             part["slot"] = black_slot                # (printed in black, not a mix)
             parts.append(part)
             continue

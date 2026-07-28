@@ -256,7 +256,7 @@ PAGE = r"""<!doctype html><html><head><meta charset=utf-8>
  .warn{background:#fdeaea;border:1px solid #e8a1a1;color:#8a1f1f;border-radius:8px;padding:8px 12px;margin:8px 0}
  .info{background:#eef3fb;border:1px solid #b8cdec;color:#274a7a;border-radius:8px;padding:8px 12px;margin:8px 0}
  .ok{background:#e7f6ec;border:1px solid #94cea9;color:#1c5c30;border-radius:8px;padding:8px 12px;margin:8px 0}
- img.prev{max-width:360px;border:1px solid #ccc;border-radius:6px;background:#111;cursor:zoom-in}
+ img.prev{max-width:320px;max-height:420px;border:1px solid #ccc;border-radius:6px;background:#111;cursor:zoom-in}
  table{border-collapse:collapse;font-size:12.5px}td,th{padding:3px 8px;text-align:left}
  .sw{display:inline-block;width:26px;height:16px;border:1px solid #999;border-radius:3px;vertical-align:middle}
  details summary{cursor:pointer;color:#555}
