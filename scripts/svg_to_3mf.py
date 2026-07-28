@@ -442,28 +442,41 @@ def _read_leading(path):
     return out
 
 
-def render_preview(m, path, ppm=3.0, leading_svg=None):
+def render_preview(m, path, ppm=6.0, leading_svg=None, ss=3):
     """Gamut preview PNG: each pane painted its PRINTABLE recipe colour (what the
     panel will actually look like), with the black leading drawn on top if given
-    (preview only -- the leading is NOT in the 3MF; Bambu adds it)."""
+    (preview only -- the leading is NOT in the 3MF; Bambu adds it).
+
+    Rendered ``ss``x supersampled and box-downscaled with LANCZOS so pane and
+    leading edges are anti-aliased (smooth), not staircased.  ``ppm`` is the final
+    pixels-per-mm -- kept high enough that zooming in shows crisp detail."""
     from PIL import Image, ImageDraw
     W, H = m["W"], m["H"]
-    img = Image.new("RGB", (max(1, int(W * ppm)), max(1, int(H * ppm))),
+    r = ppm * ss                                       # supersample resolution
+    img = Image.new("RGB", (max(1, int(W * r)), max(1, int(H * r))),
                     (16, 16, 20))
     d = ImageDraw.Draw(img)
     panes = []
     for it in m["items"]:
-        hx = m["rec_cache"][m["targets"][it["hex"]]]["predicted_hex"]
-        rgb = tuple(int(hx[2 * k:2 * k + 2], 16) for k in range(3))
+        src = it["hex"]                                # the pane's source colour
+        sr, sg, sb = (int(src[2 * k:2 * k + 2], 16) for k in range(3))
+        if max(sr, sg, sb) < 40:                       # BLACK glass pane -> show black
+            rgb = (18, 18, 22)                         # (printed in black, not a mix)
+        else:
+            hx = m["rec_cache"][m["targets"][it["hex"]]]["predicted_hex"]
+            rgb = tuple(int(hx[2 * k:2 * k + 2], 16) for k in range(3))
         for poly in nest_polygons(it["rings"]):       # solid panes only
             panes.append((abs(_ring_area(poly["outer"])), poly["outer"], rgb))
     for _, outer, rgb in sorted(panes, key=lambda x: -x[0]):   # big -> small on top
-        d.polygon([(x * ppm, y * ppm) for x, y in outer], fill=rgb)
+        d.polygon([(x * r, y * r) for x, y in outer], fill=rgb)
     if leading_svg and os.path.isfile(leading_svg):
         s = m.get("scale", 1.0)                        # rings were scaled; leading too
         for pts, w in _read_leading(leading_svg):
-            d.line([(x * s * ppm, y * s * ppm) for x, y in pts], fill=(12, 12, 14),
-                   width=max(1, round(w * s * ppm)), joint="curve")
+            d.line([(x * s * r, y * s * r) for x, y in pts], fill=(12, 12, 14),
+                   width=max(1, round(w * s * r)), joint="curve")
+    if ss > 1:
+        img = img.resize((max(1, int(W * ppm)), max(1, int(H * ppm))),
+                         Image.LANCZOS)
     img.save(path)
     return path
 
@@ -537,11 +550,16 @@ def build_3mf(frag_dir, cal_root, out_path, thickness=1.6, max_delta=20.0,
 
     parts = []
     for it in items:                                 # one object per source fragment
-        rec = rec_cache[targets[it["hex"]]]
         v, t = extrude(it["rings"], 0.0, thickness, flip_h=H)
         if not t:
             continue
         part = {"name": "c_%s" % it["hex"], "mesh": (v, t)}
+        sr, sg, sb = (int(it["hex"][2 * k:2 * k + 2], 16) for k in range(3))
+        if max(sr, sg, sb) < 40:                     # BLACK glass pane -> black slot
+            part["slot"] = black_slot                # (printed in black, not a mix)
+            parts.append(part)
+            continue
+        rec = rec_cache[targets[it["hex"]]]
         if rec["n"] == 1:
             part["slot"] = slot_of[rec["filaments"][0]]
         else:

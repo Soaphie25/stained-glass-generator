@@ -176,7 +176,8 @@ def do_preview(data):
         return {"ok": False, "stderr": str(e)}
     prev = os.path.join(WORK, "preview.png")
     lead = os.path.join(ROOT, WORK, "leading.svg")
-    V.render_preview(m, os.path.join(ROOT, prev), leading_svg=lead)
+    # high-res + anti-aliased so the click-to-zoom lightbox shows crisp detail
+    V.render_preview(m, os.path.join(ROOT, prev), leading_svg=lead, ppm=8, ss=2)
     return {"ok": True, "image": prev, "table": _table(m),
             "dims": [round(m["W"]), round(m["H"])],
             "n_out": sum(1 for r in _table(m) if r["out"])}
@@ -255,7 +256,7 @@ PAGE = r"""<!doctype html><html><head><meta charset=utf-8>
  .warn{background:#fdeaea;border:1px solid #e8a1a1;color:#8a1f1f;border-radius:8px;padding:8px 12px;margin:8px 0}
  .info{background:#eef3fb;border:1px solid #b8cdec;color:#274a7a;border-radius:8px;padding:8px 12px;margin:8px 0}
  .ok{background:#e7f6ec;border:1px solid #94cea9;color:#1c5c30;border-radius:8px;padding:8px 12px;margin:8px 0}
- img.prev{max-width:360px;border:1px solid #ccc;border-radius:6px;background:#111}
+ img.prev{max-width:360px;border:1px solid #ccc;border-radius:6px;background:#111;cursor:zoom-in}
  table{border-collapse:collapse;font-size:12.5px}td,th{padding:3px 8px;text-align:left}
  .sw{display:inline-block;width:26px;height:16px;border:1px solid #999;border-radius:3px;vertical-align:middle}
  details summary{cursor:pointer;color:#555}
@@ -313,10 +314,19 @@ PAGE = r"""<!doctype html><html><head><meta charset=utf-8>
 </fieldset>
 </div>
 
+<div id=lbx onclick="closeLbx(event)" style="display:none;position:fixed;inset:0;background:rgba(10,10,14,.92);z-index:1000;overflow:auto;text-align:center;padding:12px;box-sizing:border-box">
+ <div style="position:fixed;top:10px;right:16px;color:#ccc;font-size:13px">click image = 100% / fit · click背景或 Esc 关闭</div>
+ <img id=lbx_img onclick="lbxZoom(event)" style="max-width:98%;max-height:96vh;box-shadow:0 0 24px #000;border-radius:4px;vertical-align:middle">
+</div>
+
 <script>
 function $(i){return document.getElementById(i);}
 function f2b64(f){return new Promise(r=>{const x=new FileReader();x.onload=()=>r({filename:f.name,b64:x.result});x.readAsDataURL(f);});}
-function img(p){return '<img class=prev src="/img?path='+encodeURIComponent(p)+'&t='+Date.now()+'">';}
+function img(p){return '<img class=prev title="click to zoom · 点击放大" src="/img?path='+encodeURIComponent(p)+'&t='+Date.now()+'" onclick="lightbox(this.src)">';}
+function lightbox(src){const b=document.getElementById('lbx'),i=document.getElementById('lbx_img');i.src=src;i.style.width='';i.dataset.full='0';i.style.cursor='zoom-in';b.style.display='block';}
+function lbxZoom(e){e.stopPropagation();const i=document.getElementById('lbx_img');if(i.dataset.full==='1'){i.style.width='';i.dataset.full='0';i.style.cursor='zoom-in';}else{i.style.width=i.naturalWidth+'px';i.dataset.full='1';i.style.cursor='zoom-out';}}
+function closeLbx(e){if(!e||e.target.id==='lbx')document.getElementById('lbx').style.display='none';}
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeLbx();});
 async function post(u,b){const r=await fetch(u,{method:'POST',body:JSON.stringify(b||{})});return r.json();}
 function leadUI(){const m=$('o_leadmode').value;
  $('lead_tier').style.display=(m==='tier')?'inline':'none';
